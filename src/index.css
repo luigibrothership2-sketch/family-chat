@@ -60,6 +60,11 @@
 }
 
 /* Leaflet map custom popups and controls matching clean light theme */
+.family-radar-marker {
+  background: transparent !important;
+  border: none !important;
+}
+
 .leaflet-popup-content-wrapper {
   background: #ffffff !important;
   color: #0f172a !important;
@@ -77,4 +82,25 @@
   font-family: 'Plus Jakarta Sans', sans-serif !important;
   background-color: #f1f5f9 !important;
   z-index: 10;
+}
+
+.leaflet-bar {
+  border: 1px solid #e2e8f0 !important;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05) !important;
+  border-radius: 12px !important;
+  overflow: hidden !important;
+}
+
+.leaflet-bar a {
+  background-color: #ffffff !important;
+  color: #334155 !important;
+  border-bottom: 1px solid #f1f5f9 !important;
+  width: 34px !important;
+  height: 34px !important;
+  line-height: 34px !important;
+}
+
+.leaflet-bar a:hover {
+  background-color: #f8fafc !important;
+  color: #007aff !important;
 }

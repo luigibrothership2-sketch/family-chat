@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { useFamily } from '../context/FamilyContext';
 import { useLanguage } from '../context/LanguageContext';
 import { User } from '../types';
 import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import {
   BatteryCharging,
   BatteryMedium,
@@ -11,6 +12,8 @@ import {
   MessageSquare,
   BellRing,
   LocateFixed,
+  Maximize2,
+  Users,
 } from 'lucide-react';
 
 /**
@@ -59,41 +62,63 @@ export function RadarMapView() {
   const [selectedUser, setSelectedUser] = useState<User | null>(currentUser);
   const [pingAlert, setPingAlert] = useState<string | null>(null);
 
-  if (!currentUser) return null;
-
-  // Initialize Leaflet map
+  // Initialize Leaflet map with 100% free, open-source OpenStreetMap tiles
   useEffect(() => {
-    if (!mapContainerRef.current) return;
+    const container = mapContainerRef.current;
+    if (!container) return;
 
-    if (!mapInstanceRef.current) {
-      const initialLat = currentUser.location?.lat || 37.7749;
-      const initialLng = currentUser.location?.lng || -122.4194;
-
-      const map = L.map(mapContainerRef.current, {
-        center: [initialLat, initialLng],
-        zoom: 14,
-        zoomControl: false,
-      });
-
-      // Carto Voyager tiles (clean, soft, light map style)
-      L.tileLayer(
-        'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-        {
-          attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
-          subdomains: 'abcd',
-          maxZoom: 19,
-        }
-      ).addTo(map);
-
-      L.control.zoom({ position: isRTL ? 'bottomleft' : 'bottomright' }).addTo(map);
-      mapInstanceRef.current = map;
+    // Safely remove any existing map instance on re-mount or container shift
+    if (mapInstanceRef.current) {
+      mapInstanceRef.current.remove();
+      mapInstanceRef.current = null;
     }
-  }, [currentUser.location?.lat, currentUser.location?.lng, isRTL]);
 
-  // Update markers when users change
+    const initialLat = currentUser?.location?.lat || 37.7749;
+    const initialLng = currentUser?.location?.lng || -122.4194;
+
+    const map = L.map(container, {
+      center: [initialLat, initialLng],
+      zoom: 14,
+      zoomControl: false,
+    });
+
+    // Completely free, open-source OpenStreetMap tile layer (zero API key, zero token, zero billing setup)
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution:
+        '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
+      crossOrigin: true,
+    }).addTo(map);
+
+    L.control.zoom({ position: isRTL ? 'bottomleft' : 'bottomright' }).addTo(map);
+    mapInstanceRef.current = map;
+
+    // Invalidate size shortly after mount to ensure tiles render seamlessly even during animations/transitions
+    const resizeTimer = setTimeout(() => {
+      map.invalidateSize();
+    }, 150);
+
+    const resizeObserver = new ResizeObserver(() => {
+      map.invalidateSize();
+    });
+    resizeObserver.observe(container);
+
+    return () => {
+      clearTimeout(resizeTimer);
+      resizeObserver.disconnect();
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove();
+        mapInstanceRef.current = null;
+      }
+      markersRef.current = {};
+      circleRef.current = null;
+    };
+  }, [isRTL]); // Stable initialization
+
+  // Update or render user markers
   useEffect(() => {
     const map = mapInstanceRef.current;
-    if (!map) return;
+    if (!map || !currentUser) return;
 
     users.forEach((user) => {
       const lat = user.location?.lat ?? 37.7749;
@@ -109,12 +134,12 @@ export function RadarMapView() {
           : 'bg-red-600';
 
       const customIconHtml = `
-        <div class="relative flex flex-col items-center group cursor-pointer" style="transform: translate(-50%, -50%);">
-          <!-- Avatar Frame: Clean light pin -->
+        <div class="flex flex-col items-center cursor-pointer select-none pointer-events-auto" style="width: 140px; margin-left: -70px; margin-top: -38px;">
+          <!-- Avatar Frame -->
           <div class="relative w-11 h-11 rounded-full overflow-hidden border-2 ${
             isMe
-              ? 'border-blue-600 ring-2 ring-blue-400/40'
-              : 'border-slate-300'
+              ? 'border-blue-600 ring-4 ring-blue-500/25'
+              : 'border-slate-300 ring-2 ring-slate-200/60'
           } shadow-md bg-white">
             <img src="${user.avatarUrl}" alt="${displayName}" class="w-full h-full object-cover" />
             <span class="absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-white ${
@@ -123,9 +148,9 @@ export function RadarMapView() {
           </div>
 
           <!-- Radar Tag Pill (Custom Nickname + Battery) -->
-          <div class="mt-1 px-2 py-0.5 rounded-lg bg-white border border-slate-200 text-slate-900 shadow-sm flex items-center gap-1.5 whitespace-nowrap">
-            <span class="text-[11px] font-semibold text-slate-900">${displayName}</span>
-            <span class="text-[9px] font-sans px-1 rounded text-white ${batteryBg}">
+          <div class="mt-1 px-2.5 py-0.5 rounded-full bg-white/95 backdrop-blur-xs border border-slate-200 text-slate-800 shadow-sm flex items-center gap-1.5 whitespace-nowrap">
+            <span class="text-[11px] font-bold text-slate-900 truncate max-w-[80px]">${displayName}</span>
+            <span class="text-[9px] font-sans font-semibold px-1 rounded text-white ${batteryBg}">
               ${user.batteryLevel}% 🔋
             </span>
           </div>
@@ -135,8 +160,8 @@ export function RadarMapView() {
       const customIcon = L.divIcon({
         html: customIconHtml,
         className: 'family-radar-marker',
-        iconSize: [44, 58],
-        iconAnchor: [22, 29],
+        iconSize: [140, 70],
+        iconAnchor: [70, 22],
       });
 
       if (markersRef.current[user.id]) {
@@ -152,8 +177,17 @@ export function RadarMapView() {
       }
     });
 
+    // Remove old markers if a user was deleted/left
+    const currentMemberIds = new Set(users.map((u) => u.id));
+    Object.keys(markersRef.current).forEach((userId) => {
+      if (!currentMemberIds.has(userId)) {
+        markersRef.current[userId].remove();
+        delete markersRef.current[userId];
+      }
+    });
+
     // Accuracy circle for current user
-    if (currentUser.location?.accuracy && currentUser.location?.lat) {
+    if (currentUser.location?.accuracy && currentUser.location?.lat && currentUser.location?.lng) {
       if (circleRef.current) {
         circleRef.current.setLatLng([currentUser.location.lat, currentUser.location.lng]);
         circleRef.current.setRadius(currentUser.location.accuracy);
@@ -162,30 +196,42 @@ export function RadarMapView() {
           [currentUser.location.lat, currentUser.location.lng],
           {
             radius: currentUser.location.accuracy || 20,
-            color: '#2563eb',
-            fillColor: '#3b82f6',
+            color: '#007aff',
+            fillColor: '#007aff',
             fillOpacity: 0.12,
-            weight: 1,
+            weight: 1.5,
           }
         ).addTo(map);
       }
     }
   }, [users, getDisplayName, currentUser]);
 
-  const handlePanToUser = (user: User) => {
+  const handlePanToUser = useCallback((user: User) => {
     setSelectedUser(user);
     if (mapInstanceRef.current && user.location) {
       mapInstanceRef.current.setView([user.location.lat, user.location.lng], 15, {
         animate: true,
       });
     }
-  };
+  }, []);
+
+  const handleFitAllMembers = useCallback(() => {
+    const map = mapInstanceRef.current;
+    if (!map || users.length === 0) return;
+
+    const bounds = L.latLngBounds(
+      users.map((u) => [u.location?.lat ?? 37.7749, u.location?.lng ?? -122.4194])
+    );
+    map.fitBounds(bounds, { padding: [60, 60], maxZoom: 16 });
+  }, [users]);
 
   const handlePing = (user: User) => {
     pingMemberLocation(user.id);
     setPingAlert(`${t('pingSent')} ${getDisplayName(user.id)}!`);
     setTimeout(() => setPingAlert(null), 3000);
   };
+
+  if (!currentUser) return null;
 
   const selectedDisplayName = selectedUser ? getDisplayName(selectedUser.id) : '';
   const isSelectedMe = selectedUser?.id === currentUser.id;
@@ -224,9 +270,12 @@ export function RadarMapView() {
                 <span className="w-1.5 h-1.5 rounded-full bg-blue-600" />
                 {isGpsActive ? t('gpsActive') : 'GPS Standby'}
               </span>
+              <span className="text-[10px] bg-emerald-50 text-emerald-700 font-medium px-2 py-0.5 rounded-md border border-emerald-200 hidden sm:inline-block">
+                OpenStreetMap Free
+              </span>
             </div>
             <p className="text-[11px] text-slate-500">
-              Continuous live GPS tracking & battery telemetry synced over Firestore.
+              Live family GPS tracking & battery telemetry synced over open-source Leaflet.js.
             </p>
           </div>
         </div>
@@ -236,10 +285,22 @@ export function RadarMapView() {
             <button
               type="button"
               onClick={enableGpsRadar}
-              className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium text-xs flex items-center gap-1.5 transition shadow-xs"
+              className="px-3.5 py-1.5 rounded-xl bg-[#007aff] hover:bg-blue-600 text-white font-medium text-xs flex items-center gap-1.5 transition shadow-xs"
             >
               <LocateFixed className="w-4 h-4" />
               <span>{t('enableGps')}</span>
+            </button>
+          )}
+
+          {users.length > 1 && (
+            <button
+              type="button"
+              onClick={handleFitAllMembers}
+              className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1.5 transition border border-slate-200"
+              title="Fit all family members in view"
+            >
+              <Maximize2 className="w-3.5 h-3.5 text-slate-600" />
+              <span className="hidden sm:inline">Fit All</span>
             </button>
           )}
 
@@ -254,13 +315,13 @@ export function RadarMapView() {
         </div>
       </header>
 
-      {/* Interactive Map Surface */}
+      {/* Interactive OpenStreetMap Surface */}
       <div className="flex-1 relative">
         <div ref={mapContainerRef} className="w-full h-full z-10" />
 
         {/* Floating Family Member Quick-Pan Rail */}
-        <div className="absolute top-4 left-4 right-4 z-20 flex gap-2 overflow-x-auto pb-2 pointer-events-none">
-          <div className="flex gap-2 pointer-events-auto bg-white/95 p-1.5 rounded-xl border border-slate-200 shadow-md">
+        <div className="absolute top-3 left-3 right-3 z-20 flex gap-2 overflow-x-auto pb-2 pointer-events-none">
+          <div className="flex gap-2 pointer-events-auto bg-white/95 backdrop-blur-xs p-1.5 rounded-2xl border border-slate-200/90 shadow-md">
             {users.map((u) => {
               const isSelected = selectedUser?.id === u.id;
               const dName = getDisplayName(u.id);
@@ -270,7 +331,7 @@ export function RadarMapView() {
                   key={u.id}
                   type="button"
                   onClick={() => handlePanToUser(u)}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-semibold transition ${
                     isSelected
                       ? 'bg-blue-600 text-white shadow-xs'
                       : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
@@ -281,8 +342,8 @@ export function RadarMapView() {
                     alt={dName}
                     className="w-5 h-5 rounded-full object-cover border border-slate-200"
                   />
-                  <span>{dName}</span>
-                  <span className="text-[10px] font-sans opacity-80">{u.batteryLevel}%</span>
+                  <span className="truncate max-w-[90px]">{dName}</span>
+                  <span className="text-[10px] font-sans opacity-90">{u.batteryLevel}%</span>
                 </button>
               );
             })}
@@ -363,7 +424,7 @@ export function RadarMapView() {
 
             {/* Address / Location text */}
             <div className="mt-2.5 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs flex items-center justify-between text-slate-700">
-              <span className="truncate">📍 {selectedUser.location?.address || 'Current Location'}</span>
+              <span className="truncate">📍 {selectedUser.location?.address || 'Current Coordinates'}</span>
               <span className="text-[10px] text-slate-400 font-sans shrink-0 ml-2">
                 {selectedUser.location?.updatedAt || 'Live'}
               </span>
