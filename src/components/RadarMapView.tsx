@@ -30,9 +30,11 @@ export function RadarMapView() {
   const mapInstanceRef = useRef<L.Map | null>(null);
   const markersRef = useRef<{ [userId: string]: L.Marker }>({});
 
-  const [selectedUser, setSelectedUser] = useState<User>(currentUser);
+  const [selectedUser, setSelectedUser] = useState<User | null>(currentUser);
   const [isRadarScanning, setIsRadarScanning] = useState(true);
   const [pingAlert, setPingAlert] = useState<string | null>(null);
+
+  if (!currentUser) return null;
 
   // Initialize Leaflet map
   useEffect(() => {
@@ -234,7 +236,7 @@ export function RadarMapView() {
         {/* List of active family members with battery & status */}
         <div className="p-3 space-y-2 flex-1">
           {users.map((user) => {
-            const isSelected = user.id === selectedUser.id;
+            const isSelected = selectedUser ? user.id === selectedUser.id : false;
             const displayName = getDisplayName(user.id);
             const isMe = user.id === currentUser.id;
 

@@ -40,10 +40,12 @@ export function TasksView() {
   // New task form state
   const [newTitle, setNewTitle] = useState('');
   const [newDesc, setNewDesc] = useState('');
-  const [newAssigneeId, setNewAssigneeId] = useState(currentUser.id);
+  const [newAssigneeId, setNewAssigneeId] = useState(currentUser?.id || '');
   const [newPriority, setNewPriority] = useState<TaskPriority>('medium');
   const [newCategory, setNewCategory] = useState<'chores' | 'errands' | 'school' | 'health' | 'event'>('chores');
   const [newDueDate, setNewDueDate] = useState('Today, 6:00 PM');
+
+  if (!currentUser) return null;
 
   const activeGroup = groups.find((g) => g.id === activeGroupId) || groups[0];
 

@@ -23,6 +23,7 @@ import {
   Pause,
   AlertCircle,
   Users,
+  MessageSquare,
 } from 'lucide-react';
 
 export function ChatView() {
@@ -52,6 +53,8 @@ export function ChatView() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recordingTimerRef = useRef<any>(null);
+
+  if (!currentUser) return null;
 
   const isGroup = !activeConversationId.startsWith('user-');
   const currentGroup = isGroup ? groups.find((g) => g.id === activeConversationId) : null;
@@ -305,6 +308,36 @@ export function ChatView() {
             </p>
           </div>
         </div>
+
+        {currentMessages.length === 0 && (
+          <div className="flex flex-col items-center justify-center text-center py-12 px-4 max-w-md mx-auto my-auto animate-in fade-in">
+            <div className="w-14 h-14 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mb-3.5">
+              <MessageSquare className="w-7 h-7" />
+            </div>
+            <h3 className="font-heading font-bold text-base text-white mb-1">
+              Start your real family conversation
+            </h3>
+            <p className="text-xs text-slate-400 leading-relaxed mb-4">
+              Your chat history is clean and ready for your real family. Send messages, voice notes, photos, or sensitive family documents.
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <button
+                type="button"
+                onClick={() => sendMessage({ text: 'Hello everyone! 👋 Ready to stay connected.' })}
+                className="text-xs px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
+              >
+                Say Hello 👋
+              </button>
+              <button
+                type="button"
+                onClick={() => sendMessage({ text: 'Checking in with the family! 🏡' })}
+                className="text-xs px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
+              >
+                Check In 🏡
+              </button>
+            </div>
+          </div>
+        )}
 
         {currentMessages.map((msg) => {
           const isMe = msg.senderId === currentUser.id;

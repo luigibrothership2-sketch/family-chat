@@ -96,3 +96,15 @@ export interface CallSession {
 export interface AliasMap {
   [targetUserId: string]: string; // e.g. "user-2" -> "My Brother Ahmad"
 }
+
+export interface UserAccount {
+  id: string;
+  username: string;
+  password: string;
+  fullName: string;
+  role: 'parent' | 'child' | 'teen' | 'guardian';
+  email?: string;
+  phone?: string;
+  avatarUrl: string;
+  familyGroupId?: string;
+}

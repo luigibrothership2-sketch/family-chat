@@ -9,21 +9,21 @@ export function AuthModal() {
     setIsAuthModalOpen,
     users,
     currentUser,
-    setCurrentUser,
     getDisplayName,
-    loginUser,
-    registerChild,
+    login,
+    signup,
+    accounts,
   } = useFamily();
 
-  const [activeMethod, setActiveMethod] = useState<AuthMethod>('email');
+  const [activeMethod, setActiveMethod] = useState<AuthMethod>('username');
   const [isKidRegisterMode, setIsKidRegisterMode] = useState(false);
 
   // Form states
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
-  const [fullName, setFullName] = useState('');
   const [kidUsername, setKidUsername] = useState('');
   const [kidFullName, setKidFullName] = useState('');
+  const [kidPassword, setKidPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
@@ -39,14 +39,14 @@ export function AuthModal() {
       return;
     }
 
-    const ok = loginUser(identifier, activeMethod, fullName);
-    if (ok) {
+    const res = login(identifier.trim(), password);
+    if (res.success) {
       setSuccessMsg('Successfully signed in!');
       setTimeout(() => {
         setIsAuthModalOpen(false);
       }, 500);
     } else {
-      setErrorMsg(`No account found matching this ${activeMethod}. Use one of the Demo Family Accounts below or sign up.`);
+      setErrorMsg(res.error || 'Invalid credentials.');
     }
   };
 
@@ -59,24 +59,34 @@ export function AuthModal() {
       return;
     }
 
-    try {
-      const newChild = registerChild(kidUsername.trim(), kidFullName.trim());
-      setSuccessMsg(`Welcome ${newChild.fullName}! Kid account created without email or phone requirement.`);
+    const res = signup({
+      username: kidUsername.trim(),
+      password: kidPassword || '1234',
+      fullName: kidFullName.trim(),
+      role: 'child',
+    });
+
+    if (res.success) {
+      setSuccessMsg(`Welcome ${kidFullName.trim()}! Kid account created without email or phone requirement.`);
       setTimeout(() => {
         setIsAuthModalOpen(false);
         setIsKidRegisterMode(false);
       }, 800);
-    } catch {
-      setErrorMsg('Could not register child account. Please try a different username.');
+    } else {
+      setErrorMsg(res.error || 'Could not register child account. Try another username.');
     }
   };
 
-  const handleSelectDemoUser = (user: User) => {
-    setCurrentUser(user);
-    setSuccessMsg(`Switched to ${getDisplayName(user.id)}`);
-    setTimeout(() => {
-      setIsAuthModalOpen(false);
-    }, 400);
+  const handleSelectAccount = (accUsername: string, accPass: string) => {
+    const res = login(accUsername, accPass);
+    if (res.success) {
+      setSuccessMsg(`Switched account`);
+      setTimeout(() => {
+        setIsAuthModalOpen(false);
+      }, 400);
+    } else {
+      setErrorMsg(res.error || 'Could not switch to this account.');
+    }
   };
 
   return (
@@ -102,56 +112,52 @@ export function AuthModal() {
         </div>
 
         <div className="p-6 space-y-6">
-          {/* Quick Demo Family Profile Switcher */}
-          <div>
-            <div className="flex items-center justify-between mb-2.5">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                Quick Switch Family Member
-              </span>
-              <span className="text-[11px] text-slate-500">Instant Demo Login</span>
+          {/* Quick Family Profile Switcher (if accounts exist) */}
+          {accounts.length > 0 && (
+            <div>
+              <div className="flex items-center justify-between mb-2.5">
+                <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                  Family Accounts on Device
+                </span>
+                <span className="text-[11px] text-slate-500">Quick Sign In</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {accounts.map((acc) => {
+                  const isCurrent = currentUser ? acc.id === currentUser.id : false;
+                  return (
+                    <button
+                      key={acc.id}
+                      type="button"
+                      onClick={() => handleSelectAccount(acc.username, acc.password)}
+                      className={`flex items-center gap-2.5 p-2.5 rounded-2xl border text-left transition relative group ${
+                        isCurrent
+                          ? 'border-emerald-500 bg-emerald-500/15 text-white ring-1 ring-emerald-500'
+                          : 'border-slate-800 bg-slate-800/40 text-slate-300 hover:bg-slate-800 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="relative">
+                        <img
+                          src={acc.avatarUrl}
+                          alt={acc.fullName}
+                          className="w-9 h-9 rounded-full object-cover shrink-0 border border-slate-700"
+                        />
+                      </div>
+                      <div className="truncate min-w-0">
+                        <p className="text-xs font-semibold truncate text-white">{acc.fullName}</p>
+                        <p className="text-[10px] text-slate-400 truncate">
+                          @{acc.username}
+                        </p>
+                      </div>
+                      {isCurrent && (
+                        <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {users.map((u) => {
-                const isCurrent = u.id === currentUser.id;
-                const displayName = getDisplayName(u.id);
-                return (
-                  <button
-                    key={u.id}
-                    type="button"
-                    onClick={() => handleSelectDemoUser(u)}
-                    className={`flex items-center gap-2.5 p-2.5 rounded-2xl border text-left transition relative group ${
-                      isCurrent
-                        ? 'border-emerald-500 bg-emerald-500/15 text-white ring-1 ring-emerald-500'
-                        : 'border-slate-800 bg-slate-800/40 text-slate-300 hover:bg-slate-800 hover:border-slate-700'
-                    }`}
-                  >
-                    <div className="relative">
-                      <img
-                        src={u.avatarUrl}
-                        alt={u.fullName}
-                        className="w-9 h-9 rounded-full object-cover shrink-0 border border-slate-700"
-                      />
-                      <span
-                        className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full ring-2 ring-slate-900 ${
-                          u.isOnline ? 'bg-emerald-400' : 'bg-slate-500'
-                        }`}
-                      />
-                    </div>
-                    <div className="truncate min-w-0">
-                      <p className="text-xs font-semibold truncate text-white">{displayName}</p>
-                      <p className="text-[10px] text-slate-400 truncate">
-                        {u.role === 'child' ? '👶 Kid (No phone)' : `@${u.username}`}
-                      </p>
-                    </div>
-                    {isCurrent && (
-                      <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          )}
 
           <div className="relative flex items-center justify-center">
             <div className="border-t border-slate-800 w-full" />

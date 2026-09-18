@@ -37,12 +37,15 @@ export function Sidebar({ onCloseMobileDrawer }: SidebarProps) {
     setTargetAliasUserId,
     createGroup,
     tasks,
+    logout,
   } = useFamily();
 
   const [isNewGroupModalOpen, setIsNewGroupModalOpen] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const [newGroupDesc, setNewGroupDesc] = useState('');
   const [isAddMemberModalOpen, setIsAddMemberModalOpen] = useState(false);
+
+  if (!currentUser) return null;
 
   const pendingTasksCount = tasks.filter((t) => t.status === 'pending').length;
 
@@ -189,38 +192,51 @@ export function Sidebar({ onCloseMobileDrawer }: SidebarProps) {
           </div>
 
           <div className="space-y-1">
-            {groups.map((g) => {
-              const isSelected = activeConversationId === g.id && activeTab === 'chat';
-              return (
+            {groups.length === 0 ? (
+              <div className="p-3 rounded-2xl bg-slate-950/60 border border-slate-800 text-center">
+                <p className="text-xs text-slate-400 mb-2">No family circles yet</p>
                 <button
-                  key={g.id}
                   type="button"
-                  onClick={() => handleSelectConversation(g.id, true)}
-                  className={`w-full flex items-center justify-between p-2.5 rounded-2xl transition text-left group ${
-                    isSelected
-                      ? 'bg-emerald-500/15 text-white border border-emerald-500/40 ring-1 ring-emerald-500/30'
-                      : 'hover:bg-slate-800/60 text-slate-300'
-                  }`}
+                  onClick={() => setIsNewGroupModalOpen(true)}
+                  className="px-3 py-1.5 rounded-xl bg-emerald-500/20 text-emerald-400 text-xs font-bold border border-emerald-500/30 hover:bg-emerald-500/30 transition"
                 >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <img
-                      src={g.avatarUrl}
-                      alt={g.name}
-                      className="w-10 h-10 rounded-2xl object-cover border border-slate-700 shrink-0"
-                    />
-                    <div className="truncate">
-                      <p className="font-heading font-semibold text-xs md:text-sm text-white truncate">
-                        {g.name}
-                      </p>
-                      <p className="text-[11px] text-slate-400 truncate mt-0.5">
-                        {g.memberIds.length} members • Vault active
-                      </p>
-                    </div>
-                  </div>
-                  <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-slate-300 shrink-0" />
+                  + Create Circle
                 </button>
-              );
-            })}
+              </div>
+            ) : (
+              groups.map((g) => {
+                const isSelected = activeConversationId === g.id && activeTab === 'chat';
+                return (
+                  <button
+                    key={g.id}
+                    type="button"
+                    onClick={() => handleSelectConversation(g.id, true)}
+                    className={`w-full flex items-center justify-between p-2.5 rounded-2xl transition text-left group ${
+                      isSelected
+                        ? 'bg-emerald-500/15 text-white border border-emerald-500/40 ring-1 ring-emerald-500/30'
+                        : 'hover:bg-slate-800/60 text-slate-300'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <img
+                        src={g.avatarUrl}
+                        alt={g.name}
+                        className="w-10 h-10 rounded-2xl object-cover border border-slate-700 shrink-0"
+                      />
+                      <div className="truncate">
+                        <p className="font-heading font-semibold text-xs md:text-sm text-white truncate">
+                          {g.name}
+                        </p>
+                        <p className="text-[11px] text-slate-400 truncate mt-0.5">
+                          {g.memberIds.length} members • Vault active
+                        </p>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-slate-300 shrink-0" />
+                  </button>
+                );
+              })
+            )}
           </div>
         </div>
 
@@ -230,69 +246,95 @@ export function Sidebar({ onCloseMobileDrawer }: SidebarProps) {
             <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
               Direct Family Chats
             </span>
-            <span className="text-[10px] text-slate-500">Encrypted</span>
+            <button
+              type="button"
+              onClick={() => setIsAddMemberModalOpen(true)}
+              className="text-[11px] text-emerald-400 hover:underline flex items-center gap-0.5"
+            >
+              + Add
+            </button>
           </div>
 
           <div className="space-y-1">
-            {users
-              .filter((u) => u.id !== currentUser.id)
-              .map((u) => {
-                const displayName = getDisplayName(u.id);
-                const isSelected = activeConversationId === u.id && activeTab === 'chat';
-                return (
-                  <button
-                    key={u.id}
-                    type="button"
-                    onClick={() => handleSelectConversation(u.id, false)}
-                    className={`w-full flex items-center justify-between p-2 rounded-2xl transition text-left group ${
-                      isSelected
-                        ? 'bg-emerald-500/15 text-white border border-emerald-500/40 ring-1 ring-emerald-500/30'
-                        : 'hover:bg-slate-800/60 text-slate-300'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="relative shrink-0">
-                        <img
-                          src={u.avatarUrl}
-                          alt={displayName}
-                          className="w-9 h-9 rounded-full object-cover border border-slate-700"
-                        />
-                        <span
-                          className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-slate-900 ${
-                            u.isOnline ? 'bg-emerald-400' : 'bg-slate-500'
-                          }`}
-                        />
-                      </div>
-                      <div className="truncate">
-                        <div className="flex items-center gap-1.5">
-                          <p className="font-heading font-semibold text-xs md:text-sm text-white truncate">
-                            {displayName}
-                          </p>
-                          {u.role === 'child' && (
-                            <Baby className="w-3 h-3 text-sky-400 shrink-0" />
-                          )}
-                        </div>
-                        <p className="text-[10px] text-slate-400 truncate">
-                          {u.batteryLevel}% 🔋 • {u.location.neighborhood || 'On Radar'}
-                        </p>
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setTargetAliasUserId(u.id);
-                        setIsAliasModalOpen(true);
+            {users.filter((u) => u.id !== currentUser.id).length === 0 ? (
+              <div className="p-3 rounded-2xl bg-slate-950/60 border border-slate-800 text-center">
+                <p className="text-xs text-slate-400 mb-2">No other family members yet</p>
+                <button
+                  type="button"
+                  onClick={() => setIsAddMemberModalOpen(true)}
+                  className="px-3 py-1.5 rounded-xl bg-emerald-500/20 text-emerald-400 text-xs font-bold border border-emerald-500/30 hover:bg-emerald-500/30 transition"
+                >
+                  + Add Member
+                </button>
+              </div>
+            ) : (
+              users
+                .filter((u) => u.id !== currentUser.id)
+                .map((u) => {
+                  const displayName = getDisplayName(u.id);
+                  const isSelected = activeConversationId === u.id && activeTab === 'chat';
+                  return (
+                    <div
+                      key={u.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => handleSelectConversation(u.id, false)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          handleSelectConversation(u.id, false);
+                        }
                       }}
-                      className="p-1 rounded text-slate-500 hover:text-emerald-400 transition"
-                      title="Edit Custom Nickname"
+                      className={`w-full flex items-center justify-between p-2 rounded-2xl transition text-left group cursor-pointer ${
+                        isSelected
+                          ? 'bg-emerald-500/15 text-white border border-emerald-500/40 ring-1 ring-emerald-500/30'
+                          : 'hover:bg-slate-800/60 text-slate-300'
+                      }`}
                     >
-                      <Tag className="w-3 h-3" />
-                    </button>
-                  </button>
-                );
-              })}
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="relative shrink-0">
+                          <img
+                            src={u.avatarUrl}
+                            alt={displayName}
+                            className="w-9 h-9 rounded-full object-cover border border-slate-700"
+                          />
+                          <span
+                            className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-slate-900 ${
+                              u.isOnline ? 'bg-emerald-400' : 'bg-slate-500'
+                            }`}
+                          />
+                        </div>
+                        <div className="truncate">
+                          <div className="flex items-center gap-1.5">
+                            <p className="font-heading font-semibold text-xs md:text-sm text-white truncate">
+                              {displayName}
+                            </p>
+                            {u.role === 'child' && (
+                              <Baby className="w-3 h-3 text-sky-400 shrink-0" />
+                            )}
+                          </div>
+                          <p className="text-[10px] text-slate-400 truncate">
+                            {u.batteryLevel}% 🔋 • {u.location.neighborhood || 'On Radar'}
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setTargetAliasUserId(u.id);
+                          setIsAliasModalOpen(true);
+                        }}
+                        className="p-1 rounded text-slate-500 hover:text-emerald-400 transition"
+                        title="Edit Custom Nickname"
+                      >
+                        <Tag className="w-3 h-3" />
+                      </button>
+                    </div>
+                  );
+                })
+            )}
           </div>
         </div>
       </div>
@@ -322,9 +364,13 @@ export function Sidebar({ onCloseMobileDrawer }: SidebarProps) {
           <div className="flex items-center gap-1 shrink-0">
             <button
               type="button"
-              onClick={() => setIsAuthModalOpen(true)}
-              className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition"
-              title="Switch Family Profile or Sign In"
+              onClick={() => {
+                if (window.confirm('Log out of Family Chat?')) {
+                  logout();
+                }
+              }}
+              className="p-1.5 rounded-xl bg-slate-800 hover:bg-rose-500/20 text-slate-300 hover:text-rose-400 transition"
+              title="Log Out"
             >
               <LogOut className="w-4 h-4" />
             </button>

@@ -89,7 +89,7 @@ export function CallOverlay() {
     };
   }, [callSession.isActive, callSession.isCameraOff]);
 
-  if (!callSession.isActive) return null;
+  if (!callSession.isActive || !currentUser) return null;
 
   const minutes = Math.floor(callDuration / 60);
   const seconds = callDuration % 60;

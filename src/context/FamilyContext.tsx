@@ -1,11 +1,39 @@
 import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
-import { User, FamilyGroup, Message, FamilyTask, AliasMap, CallSession, TaskStatus, MediaAttachment, AuthMethod } from '../types';
-import { INITIAL_USERS, INITIAL_GROUPS, INITIAL_MESSAGES, INITIAL_TASKS, DEFAULT_ALIASES } from '../data/mockData';
+import { User, FamilyGroup, Message, FamilyTask, AliasMap, CallSession, TaskStatus, MediaAttachment, UserAccount } from '../types';
+import { INITIAL_USERS, INITIAL_GROUPS, INITIAL_MESSAGES, INITIAL_TASKS, DEFAULT_ALIASES, AVATAR_PRESETS } from '../data/mockData';
+
+const STORAGE_VERSION = 'family_chat_clean_v2';
+
+// Check and clear old dummy data from prior iterations if present
+function purgeOldMockStorage() {
+  try {
+    const version = localStorage.getItem('family_chat_storage_ver');
+    const oldUser = localStorage.getItem('family_chat_current_user');
+    const oldGroups = localStorage.getItem('family_chat_groups');
+    const hasOldMock = oldUser === 'user-mom' || (oldGroups && oldGroups.includes('Jenkins Household'));
+
+    if (version !== STORAGE_VERSION || hasOldMock) {
+      localStorage.removeItem('family_chat_users');
+      localStorage.removeItem('family_chat_current_user');
+      localStorage.removeItem('family_chat_groups');
+      localStorage.removeItem('family_chat_messages');
+      localStorage.removeItem('family_chat_tasks');
+      localStorage.removeItem('family_chat_aliases');
+      localStorage.removeItem('family_chat_accounts');
+      localStorage.setItem('family_chat_storage_ver', STORAGE_VERSION);
+    }
+  } catch (err) {
+    console.error('Storage purge error:', err);
+  }
+}
+
+purgeOldMockStorage();
 
 interface FamilyContextType {
-  currentUser: User;
-  setCurrentUser: (user: User) => void;
+  currentUser: User | null;
+  isAuthenticated: boolean;
   users: User[];
+  accounts: UserAccount[];
   aliases: AliasMap;
   updateAlias: (userId: string, alias: string) => void;
   getDisplayName: (userId: string) => string;
@@ -13,7 +41,7 @@ interface FamilyContextType {
   groups: FamilyGroup[];
   activeGroupId: string;
   setActiveGroupId: (id: string) => void;
-  activeConversationId: string; // group ID or user direct message ID
+  activeConversationId: string;
   setActiveConversationId: (id: string) => void;
   activeTab: 'chat' | 'radar' | 'tasks' | 'members';
   setActiveTab: (tab: 'chat' | 'radar' | 'tasks' | 'members') => void;
@@ -41,54 +69,104 @@ interface FamilyContextType {
   setIsAliasModalOpen: (open: boolean) => void;
   targetAliasUserId: string | null;
   setTargetAliasUserId: (id: string | null) => void;
-  loginUser: (identifier: string, method: AuthMethod, fullName?: string) => boolean;
-  registerChild: (username: string, fullName: string) => User;
+  login: (identifier: string, password?: string) => { success: boolean; error?: string };
+  signup: (params: {
+    username: string;
+    password: string;
+    fullName: string;
+    role: 'parent' | 'child' | 'teen' | 'guardian';
+    email?: string;
+    phone?: string;
+    familyName?: string;
+    avatarUrl?: string;
+  }) => { success: boolean; error?: string };
+  registerChild: (username: string, password: string, fullName: string) => { success: boolean; user?: User; error?: string };
+  logout: () => void;
   pingMemberLocation: (userId: string) => void;
 }
 
 const FamilyContext = createContext<FamilyContextType | null>(null);
 
 export function FamilyProvider({ children }: { children: React.ReactNode }) {
-  // Load stored state or fall back to defaults
-  const [users, setUsers] = useState<User[]>(() => {
-    const saved = localStorage.getItem('family_chat_users');
-    return saved ? JSON.parse(saved) : INITIAL_USERS;
+  // Accounts (credentials)
+  const [accounts, setAccounts] = useState<UserAccount[]>(() => {
+    try {
+      const saved = localStorage.getItem('family_chat_accounts');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
   });
 
-  const [currentUserId, setCurrentUserId] = useState<string>(() => {
-    return localStorage.getItem('family_chat_current_user') || 'user-mom';
+  // Users directory
+  const [users, setUsers] = useState<User[]>(() => {
+    try {
+      const saved = localStorage.getItem('family_chat_users');
+      return saved ? JSON.parse(saved) : INITIAL_USERS;
+    } catch {
+      return [];
+    }
+  });
+
+  // Current session user ID (null if not logged in)
+  const [currentUserId, setCurrentUserId] = useState<string | null>(() => {
+    return localStorage.getItem('family_chat_current_user') || null;
   });
 
   const [aliases, setAliases] = useState<AliasMap>(() => {
-    const saved = localStorage.getItem('family_chat_aliases');
-    return saved ? JSON.parse(saved) : DEFAULT_ALIASES;
+    try {
+      const saved = localStorage.getItem('family_chat_aliases');
+      return saved ? JSON.parse(saved) : DEFAULT_ALIASES;
+    } catch {
+      return {};
+    }
   });
 
   const [groups, setGroups] = useState<FamilyGroup[]>(() => {
-    const saved = localStorage.getItem('family_chat_groups');
-    return saved ? JSON.parse(saved) : INITIAL_GROUPS;
+    try {
+      const saved = localStorage.getItem('family_chat_groups');
+      return saved ? JSON.parse(saved) : INITIAL_GROUPS;
+    } catch {
+      return [];
+    }
   });
 
-  const [activeGroupId, setActiveGroupId] = useState<string>('group-jenkins');
-  const [activeConversationId, setActiveConversationId] = useState<string>('group-jenkins');
+  const [activeGroupId, setActiveGroupId] = useState<string>(() => {
+    return groups[0]?.id || '';
+  });
+
+  const [activeConversationId, setActiveConversationId] = useState<string>(() => {
+    return groups[0]?.id || '';
+  });
+
   const [activeTab, setActiveTab] = useState<'chat' | 'radar' | 'tasks' | 'members'>('chat');
 
+  // Messages: starts completely empty for fresh real family use
   const [messages, setMessages] = useState<Message[]>(() => {
-    const saved = localStorage.getItem('family_chat_messages');
-    return saved ? JSON.parse(saved) : INITIAL_MESSAGES;
+    try {
+      const saved = localStorage.getItem('family_chat_messages');
+      return saved ? JSON.parse(saved) : INITIAL_MESSAGES;
+    } catch {
+      return [];
+    }
   });
 
+  // Tasks: starts completely empty for real family use
   const [tasks, setTasks] = useState<FamilyTask[]>(() => {
-    const saved = localStorage.getItem('family_chat_tasks');
-    return saved ? JSON.parse(saved) : INITIAL_TASKS;
+    try {
+      const saved = localStorage.getItem('family_chat_tasks');
+      return saved ? JSON.parse(saved) : INITIAL_TASKS;
+    } catch {
+      return [];
+    }
   });
 
-  // Modal states
+  // Modals
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [isAliasModalOpen, setIsAliasModalOpen] = useState(false);
   const [targetAliasUserId, setTargetAliasUserId] = useState<string | null>(null);
 
-  // Call session state
+  // Call session
   const [callSession, setCallSession] = useState<CallSession>({
     isActive: false,
     type: 'video',
@@ -101,13 +179,21 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     startTime: 0,
   });
 
-  // Persist items
+  // Persistence
+  useEffect(() => {
+    localStorage.setItem('family_chat_accounts', JSON.stringify(accounts));
+  }, [accounts]);
+
   useEffect(() => {
     localStorage.setItem('family_chat_users', JSON.stringify(users));
   }, [users]);
 
   useEffect(() => {
-    localStorage.setItem('family_chat_current_user', currentUserId);
+    if (currentUserId) {
+      localStorage.setItem('family_chat_current_user', currentUserId);
+    } else {
+      localStorage.removeItem('family_chat_current_user');
+    }
   }, [currentUserId]);
 
   useEffect(() => {
@@ -126,13 +212,13 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('family_chat_tasks', JSON.stringify(tasks));
   }, [tasks]);
 
-  // Self-destruct interval tick: checks every 5 seconds if any self-destruct media has expired
+  // Self-destruct interval tick: checks every 3 seconds if any self-destruct media has expired
   useEffect(() => {
     const timer = setInterval(() => {
       const now = Date.now();
       let hasChange = false;
 
-      const updated = messages.map(msg => {
+      const updated = messages.map((msg) => {
         if (msg.media && msg.media.isSelfDestruct && !msg.media.isExpired) {
           if (msg.media.expiresAt && now >= msg.media.expiresAt) {
             hasChange = true;
@@ -152,21 +238,31 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
       if (hasChange) {
         setMessages(updated);
       }
-    }, 5000);
+    }, 3000);
 
     return () => clearInterval(timer);
   }, [messages]);
 
+  // Keep active conversation aligned if groups change
+  useEffect(() => {
+    if (!activeGroupId && groups.length > 0) {
+      setActiveGroupId(groups[0].id);
+    }
+    if (!activeConversationId && groups.length > 0) {
+      setActiveConversationId(groups[0].id);
+    }
+  }, [groups, activeGroupId, activeConversationId]);
+
   const currentUser = useMemo(() => {
-    const found = users.find(u => u.id === currentUserId);
-    return found || users[0];
+    if (!currentUserId) return null;
+    return users.find((u) => u.id === currentUserId) || null;
   }, [users, currentUserId]);
 
   const getUserById = (userId: string): User | undefined => {
-    return users.find(u => u.id === userId);
+    return users.find((u) => u.id === userId);
   };
 
-  // Custom Family Nickname resolution: automatically replaces raw user IDs / full names across all screens
+  // Custom Family Nickname resolution: replaces raw IDs/usernames everywhere
   const getDisplayName = (userId: string): string => {
     if (aliases[userId]) {
       return aliases[userId];
@@ -176,7 +272,7 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
   };
 
   const updateAlias = (userId: string, alias: string) => {
-    setAliases(prev => {
+    setAliases((prev) => {
       const trimmed = alias.trim();
       const updated = { ...prev };
       if (trimmed) {
@@ -188,7 +284,16 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     });
   };
 
-  const sendMessage = ({ text, media, isImportant }: { text?: string; media?: MediaAttachment; isImportant?: boolean }) => {
+  const sendMessage = ({
+    text,
+    media,
+    isImportant,
+  }: {
+    text?: string;
+    media?: MediaAttachment;
+    isImportant?: boolean;
+  }) => {
+    if (!currentUser) return;
     const newMsg: Message = {
       id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       conversationId: activeConversationId,
@@ -202,48 +307,13 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
       reactions: {},
     };
 
-    setMessages(prev => [...prev, newMsg]);
-
-    // Optional simulated playful reply from brother or mom if user sends a message
-    if (activeConversationId === 'group-jenkins' && text) {
-      const lower = text.toLowerCase();
-      let replyText = '';
-      let replierId = '';
-
-      if (lower.includes('dinner') || lower.includes('food') || lower.includes('eat')) {
-        replierId = currentUser.id === 'user-mom' ? 'user-dad' : 'user-mom';
-        replyText = 'Making homemade pasta tonight with fresh basil from the garden! 🍝';
-      } else if (lower.includes('homework') || lower.includes('test') || lower.includes('grade')) {
-        replierId = currentUser.id === 'user-ahmad' ? 'user-mom' : 'user-ahmad';
-        replyText = 'Good luck on the study session! Let me know if you need help with the equations.';
-      } else if (lower.includes('radar') || lower.includes('where')) {
-        replierId = currentUser.id === 'user-maya' ? 'user-ahmad' : 'user-maya';
-        replyText = 'Check the Family Radar tab — our real-time GPS coordinates and battery levels are updated live!';
-      }
-
-      if (replyText && replierId) {
-        setTimeout(() => {
-          setMessages(prev => [
-            ...prev,
-            {
-              id: `msg-reply-${Date.now()}`,
-              conversationId: 'group-jenkins',
-              isGroup: true,
-              senderId: replierId,
-              text: replyText,
-              timestamp: Date.now(),
-              status: 'delivered',
-            },
-          ]);
-        }, 1500);
-      }
-    }
+    setMessages((prev) => [...prev, newMsg]);
   };
 
   // Recipient opens self-destruct media: exactly 1 hour countdown starts
   const openSelfDestructMedia = (messageId: string) => {
-    setMessages(prev =>
-      prev.map(m => {
+    setMessages((prev) =>
+      prev.map((m) => {
         if (m.id === messageId && m.media && m.media.isSelfDestruct) {
           const now = Date.now();
           const durationMs = (m.media.selfDestructMinutes || 60) * 60 * 1000;
@@ -252,7 +322,7 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
             media: {
               ...m.media,
               openedAt: m.media.openedAt || now,
-              expiresAt: m.media.expiresAt || (now + durationMs),
+              expiresAt: m.media.expiresAt || now + durationMs,
             },
           };
         }
@@ -261,10 +331,9 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     );
   };
 
-  // Immediate purge of self destruct media
   const purgeSelfDestructMedia = (messageId: string) => {
-    setMessages(prev =>
-      prev.map(m => {
+    setMessages((prev) =>
+      prev.map((m) => {
         if (m.id === messageId && m.media) {
           return {
             ...m,
@@ -280,10 +349,9 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     );
   };
 
-  // Helper for testing/demo: Fast forward remaining time to test 1-hour expiration
   const fastForwardTimer = (messageId: string) => {
-    setMessages(prev =>
-      prev.map(m => {
+    setMessages((prev) =>
+      prev.map((m) => {
         if (m.id === messageId && m.media) {
           return {
             ...m,
@@ -302,13 +370,14 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
   };
 
   const reactToMessage = (messageId: string, emoji: string) => {
-    setMessages(prev =>
-      prev.map(m => {
+    if (!currentUser) return;
+    setMessages((prev) =>
+      prev.map((m) => {
         if (m.id === messageId) {
           const reactions = { ...(m.reactions || {}) };
           const existing = reactions[emoji] || [];
           if (existing.includes(currentUser.id)) {
-            reactions[emoji] = existing.filter(id => id !== currentUser.id);
+            reactions[emoji] = existing.filter((id) => id !== currentUser.id);
             if (reactions[emoji].length === 0) {
               delete reactions[emoji];
             }
@@ -329,12 +398,12 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
       id: `task-${Date.now()}`,
       createdAt: Date.now(),
     };
-    setTasks(prev => [newTask, ...prev]);
+    setTasks((prev) => [newTask, ...prev]);
   };
 
   const updateTaskStatus = (taskId: string, status: TaskStatus) => {
-    setTasks(prev =>
-      prev.map(t =>
+    setTasks((prev) =>
+      prev.map((t) =>
         t.id === taskId
           ? {
               ...t,
@@ -347,11 +416,12 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
   };
 
   const deleteTask = (taskId: string) => {
-    setTasks(prev => prev.filter(t => t.id !== taskId));
+    setTasks((prev) => prev.filter((t) => t.id !== taskId));
   };
 
   // Group creation & member addition
   const createGroup = (name: string, description: string, memberIds: string[]): string => {
+    if (!currentUser) return '';
     const newGroupId = `group-${Date.now()}`;
     const newGroup: FamilyGroup = {
       id: newGroupId,
@@ -362,7 +432,7 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
       createdById: currentUser.id,
       createdAt: Date.now(),
     };
-    setGroups(prev => [...prev, newGroup]);
+    setGroups((prev) => [...prev, newGroup]);
     setActiveGroupId(newGroupId);
     setActiveConversationId(newGroupId);
     return newGroupId;
@@ -373,7 +443,7 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     if (!cleanQuery) return { success: false, message: 'Please enter a username, email, or phone number.' };
 
     const found = users.find(
-      u =>
+      (u) =>
         u.username.toLowerCase() === cleanQuery ||
         (u.email && u.email.toLowerCase() === cleanQuery) ||
         (u.phone && u.phone.replace(/\D/g, '') === cleanQuery.replace(/\D/g, '')) ||
@@ -381,18 +451,18 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     );
 
     if (!found) {
-      return { success: false, message: `No family member found matching "${query}". Check spelling or invite them.` };
+      return { success: false, message: `No registered family member found matching "${query}". Ask them to sign up with this username!` };
     }
 
-    const targetGroup = groups.find(g => g.id === groupId);
+    const targetGroup = groups.find((g) => g.id === groupId);
     if (!targetGroup) return { success: false, message: 'Family circle group not found.' };
 
     if (targetGroup.memberIds.includes(found.id)) {
       return { success: false, message: `${getDisplayName(found.id)} is already a member of this group.` };
     }
 
-    setGroups(prev =>
-      prev.map(g => (g.id === groupId ? { ...g, memberIds: [...g.memberIds, found.id] } : g))
+    setGroups((prev) =>
+      prev.map((g) => (g.id === groupId ? { ...g, memberIds: [...g.memberIds, found.id] } : g))
     );
 
     return {
@@ -404,15 +474,16 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
 
   // Call actions
   const startCall = (type: 'audio' | 'video', channelName: string, participantIds: string[] = []) => {
+    if (!currentUser) return;
     const defaultParticipants =
       participantIds.length > 0
         ? participantIds
-        : users.filter(u => u.id !== currentUser.id).map(u => u.id);
+        : users.filter((u) => u.id !== currentUser.id).map((u) => u.id);
 
     setCallSession({
       isActive: true,
       type,
-      channelName: channelName || 'Family Conference Call',
+      channelName: channelName || 'Family Call',
       initiatorId: currentUser.id,
       participantIds: defaultParticipants,
       isMuted: false,
@@ -423,114 +494,288 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
   };
 
   const endCall = () => {
-    setCallSession(prev => ({
+    setCallSession((prev) => ({
       ...prev,
       isActive: false,
     }));
   };
 
   const toggleMute = () => {
-    setCallSession(prev => ({
+    setCallSession((prev) => ({
       ...prev,
       isMuted: !prev.isMuted,
     }));
   };
 
   const toggleCamera = () => {
-    setCallSession(prev => ({
+    setCallSession((prev) => ({
       ...prev,
       isCameraOff: !prev.isCameraOff,
     }));
   };
 
   const toggleScreenShare = () => {
-    setCallSession(prev => ({
+    setCallSession((prev) => ({
       ...prev,
       isScreenSharing: !prev.isScreenSharing,
     }));
   };
 
-  // Multi-Auth signin
-  const loginUser = (identifier: string, method: AuthMethod, fullName?: string): boolean => {
+  // Login: authenticate with username, email, or phone + password
+  const login = (identifier: string, password?: string): { success: boolean; error?: string } => {
     const clean = identifier.trim().toLowerCase();
-    let found = users.find(u => {
-      if (method === 'email' && u.email) return u.email.toLowerCase() === clean;
-      if (method === 'phone' && u.phone) return u.phone.replace(/\D/g, '') === clean.replace(/\D/g, '');
-      if (method === 'username') return u.username.toLowerCase() === clean;
-      return false;
+    if (!clean) return { success: false, error: 'Please enter your username, email, or phone number.' };
+
+    // Check existing accounts
+    const account = accounts.find((acc) => {
+      const matchUsername = acc.username.toLowerCase() === clean;
+      const matchEmail = acc.email && acc.email.toLowerCase() === clean;
+      const matchPhone = acc.phone && acc.phone.replace(/\D/g, '') === clean.replace(/\D/g, '');
+      return matchUsername || matchEmail || matchPhone;
     });
 
-    if (!found && fullName) {
-      // Auto-register new family account
-      const newUser: User = {
-        id: `user-${Date.now()}`,
-        username: method === 'username' ? clean : clean.split('@')[0],
-        fullName,
-        email: method === 'email' ? clean : undefined,
-        phone: method === 'phone' ? clean : undefined,
-        avatarUrl: `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80`,
-        role: method === 'username' && !clean.includes('@') ? 'child' : 'parent',
-        batteryLevel: Math.floor(Math.random() * 40) + 60,
+    if (!account) {
+      return {
+        success: false,
+        error: 'No account found matching this credential. Please switch to the "Sign Up" tab to create your family account.',
+      };
+    }
+
+    if (password && account.password && account.password !== password) {
+      return {
+        success: false,
+        error: 'Incorrect password. Please verify and try again.',
+      };
+    }
+
+    // Account matched! Ensure user object is present in users
+    let userObj = users.find((u) => u.id === account.id);
+    if (!userObj) {
+      userObj = {
+        id: account.id,
+        username: account.username,
+        fullName: account.fullName,
+        email: account.email,
+        phone: account.phone,
+        avatarUrl: account.avatarUrl || AVATAR_PRESETS[0],
+        role: account.role,
+        batteryLevel: 85,
         isCharging: false,
         isOnline: true,
         lastSeen: 'Active now',
         location: {
-          lat: 37.7749 + (Math.random() - 0.5) * 0.02,
-          lng: -122.4194 + (Math.random() - 0.5) * 0.02,
-          address: 'Home Residence, California',
-          neighborhood: 'Family District',
+          lat: 37.7749,
+          lng: -122.4194,
+          address: 'Home Residence',
+          neighborhood: 'Family Circle',
           speedText: 'Stationary',
-          updatedAt: 'Just now',
+          updatedAt: 'Active now',
         },
       };
-      setUsers(prev => [...prev, newUser]);
-      found = newUser;
+      setUsers((prev) => [...prev, userObj!]);
+    } else {
+      // Mark as online
+      setUsers((prev) =>
+        prev.map((u) =>
+          u.id === userObj!.id ? { ...u, isOnline: true, lastSeen: 'Active now' } : u
+        )
+      );
     }
 
-    if (found) {
-      setCurrentUserId(found.id);
-      setIsAuthModalOpen(false);
-      return true;
+    setCurrentUserId(account.id);
+
+    // Set active conversation to first group or user's group
+    const targetGroup = groups.find((g) => g.memberIds.includes(account.id)) || groups[0];
+    if (targetGroup) {
+      setActiveGroupId(targetGroup.id);
+      setActiveConversationId(targetGroup.id);
     }
-    return false;
+
+    setIsAuthModalOpen(false);
+    return { success: true };
   };
 
-  // Kid account sign up (no email or phone required!)
-  const registerChild = (username: string, fullName: string): User => {
-    const newChild: User = {
-      id: `user-${username.toLowerCase().replace(/\s+/g, '_')}-${Date.now().toString(36)}`,
-      username: username.toLowerCase().replace(/\s+/g, '_'),
-      fullName,
-      role: 'child',
-      avatarUrl: 'https://images.unsplash.com/photo-1543610892-0b1f7e6d8ac1?w=150&auto=format&fit=crop&q=80',
-      batteryLevel: 88,
+  // Signup: Register family member and optionally create the initial Family Group Circle
+  const signup = ({
+    username,
+    password,
+    fullName,
+    role,
+    email,
+    phone,
+    familyName,
+    avatarUrl,
+  }: {
+    username: string;
+    password: string;
+    fullName: string;
+    role: 'parent' | 'child' | 'teen' | 'guardian';
+    email?: string;
+    phone?: string;
+    familyName?: string;
+    avatarUrl?: string;
+  }): { success: boolean; error?: string } => {
+    const cleanUsername = username.trim().toLowerCase().replace(/\s+/g, '_');
+    if (!cleanUsername) return { success: false, error: 'Username is required.' };
+    if (!password || password.length < 3) return { success: false, error: 'Password must be at least 3 characters.' };
+    if (!fullName.trim()) return { success: false, error: 'Full name is required.' };
+
+    const exists = accounts.some((acc) => acc.username.toLowerCase() === cleanUsername);
+    if (exists) {
+      return { success: false, error: 'That username is already taken. Please choose another one.' };
+    }
+
+    const newId = `user-${cleanUsername}-${Date.now().toString(36)}`;
+    const chosenAvatar =
+      avatarUrl ||
+      AVATAR_PRESETS[Math.floor(Math.random() * AVATAR_PRESETS.length)];
+
+    const newAccount: UserAccount = {
+      id: newId,
+      username: cleanUsername,
+      password,
+      fullName: fullName.trim(),
+      role,
+      email: email?.trim() || undefined,
+      phone: phone?.trim() || undefined,
+      avatarUrl: chosenAvatar,
+    };
+
+    const newUser: User = {
+      id: newId,
+      username: cleanUsername,
+      fullName: fullName.trim(),
+      email: email?.trim() || undefined,
+      phone: phone?.trim() || undefined,
+      avatarUrl: chosenAvatar,
+      role,
+      batteryLevel: 92,
       isCharging: false,
       isOnline: true,
       lastSeen: 'Active now',
       location: {
         lat: 37.7749,
         lng: -122.4194,
-        address: 'Home - Family Room',
-        neighborhood: 'Sunset District',
-        speedText: 'Stationary (At Home)',
+        address: 'Home Residence',
+        neighborhood: 'Family Circle',
+        speedText: 'Stationary',
         updatedAt: 'Just now',
       },
     };
 
-    setUsers(prev => [...prev, newChild]);
-    // Automatically add to main family group
-    setGroups(prev =>
-      prev.map(g => (g.id === 'group-jenkins' ? { ...g, memberIds: [...g.memberIds, newChild.id] } : g))
-    );
-    setCurrentUserId(newChild.id);
+    // Save account & user
+    setAccounts((prev) => [...prev, newAccount]);
+    setUsers((prev) => [...prev, newUser]);
+
+    // Create or join family group circle
+    let groupIdToSelect = activeGroupId;
+    const groupTitle = familyName?.trim() || (groups.length === 0 ? `${fullName.trim()}'s Family 🏡` : null);
+
+    if (groupTitle) {
+      const newGroupId = `group-${Date.now()}`;
+      const newGroup: FamilyGroup = {
+        id: newGroupId,
+        name: groupTitle,
+        description: 'Our private family circle for daily updates, tasks, and safety radar.',
+        avatarUrl: 'https://images.unsplash.com/photo-1511895426328-dc8714191300?w=150&auto=format&fit=crop&q=80',
+        memberIds: [newId],
+        createdById: newId,
+        createdAt: Date.now(),
+      };
+      setGroups((prev) => [...prev, newGroup]);
+      groupIdToSelect = newGroupId;
+    } else if (groups.length > 0) {
+      // Add member to existing first group
+      setGroups((prev) =>
+        prev.map((g, idx) => (idx === 0 ? { ...g, memberIds: [...g.memberIds, newId] } : g))
+      );
+      groupIdToSelect = groups[0].id;
+    }
+
+    setCurrentUserId(newId);
+    setActiveGroupId(groupIdToSelect);
+    setActiveConversationId(groupIdToSelect);
     setIsAuthModalOpen(false);
-    return newChild;
+
+    return { success: true };
+  };
+
+  // Register Child: COPPA-safe kid account requiring ONLY username + password (no email or phone)
+  const registerChild = (
+    username: string,
+    password: string,
+    fullName: string
+  ): { success: boolean; user?: User; error?: string } => {
+    const cleanUsername = username.trim().toLowerCase().replace(/\s+/g, '_');
+    if (!cleanUsername) return { success: false, error: 'Child username is required.' };
+    if (!fullName.trim()) return { success: false, error: 'Child name is required.' };
+
+    const exists = accounts.some((acc) => acc.username.toLowerCase() === cleanUsername);
+    if (exists) {
+      return { success: false, error: 'That username is already taken. Please choose another.' };
+    }
+
+    const childId = `user-child-${cleanUsername}-${Date.now().toString(36)}`;
+    const childAvatar = 'https://images.unsplash.com/photo-1543610892-0b1f7e6d8ac1?w=150&auto=format&fit=crop&q=80';
+
+    const childAccount: UserAccount = {
+      id: childId,
+      username: cleanUsername,
+      password: password || '1234',
+      fullName: fullName.trim(),
+      role: 'child',
+      avatarUrl: childAvatar,
+    };
+
+    const childUser: User = {
+      id: childId,
+      username: cleanUsername,
+      fullName: fullName.trim(),
+      role: 'child',
+      avatarUrl: childAvatar,
+      batteryLevel: 95,
+      isCharging: true,
+      isOnline: true,
+      lastSeen: 'Active now',
+      location: {
+        lat: 37.7749,
+        lng: -122.4194,
+        address: 'Home Residence',
+        neighborhood: 'Family Circle',
+        speedText: 'Stationary',
+        updatedAt: 'Active now',
+      },
+    };
+
+    setAccounts((prev) => [...prev, childAccount]);
+    setUsers((prev) => [...prev, childUser]);
+
+    // Add child to all current family groups
+    if (groups.length > 0) {
+      setGroups((prev) =>
+        prev.map((g) => ({
+          ...g,
+          memberIds: Array.from(new Set([...g.memberIds, childId])),
+        }))
+      );
+    }
+
+    return { success: true, user: childUser };
+  };
+
+  const logout = () => {
+    if (currentUser) {
+      // Mark as offline
+      setUsers((prev) =>
+        prev.map((u) => (u.id === currentUser.id ? { ...u, isOnline: false, lastSeen: 'Offline' } : u))
+      );
+    }
+    setCurrentUserId(null);
   };
 
   const pingMemberLocation = (userId: string) => {
-    // Simulates an instant GPS location refresh
-    setUsers(prev =>
-      prev.map(u => {
+    setUsers((prev) =>
+      prev.map((u) => {
         if (u.id === userId) {
           return {
             ...u,
@@ -547,16 +792,13 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     );
   };
 
-  const setCurrentUser = (user: User) => {
-    setCurrentUserId(user.id);
-  };
-
   return (
     <FamilyContext.Provider
       value={{
         currentUser,
-        setCurrentUser,
+        isAuthenticated: !!currentUser,
         users,
+        accounts,
         aliases,
         updateAlias,
         getDisplayName,
@@ -592,8 +834,10 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
         setIsAliasModalOpen,
         targetAliasUserId,
         setTargetAliasUserId,
-        loginUser,
+        login,
+        signup,
         registerChild,
+        logout,
         pingMemberLocation,
       }}
     >

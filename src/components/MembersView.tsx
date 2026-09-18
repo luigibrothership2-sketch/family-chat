@@ -37,6 +37,8 @@ export function MembersView() {
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [editAliasInput, setEditAliasInput] = useState('');
 
+  if (!currentUser) return null;
+
   const activeGroup = groups.find((g) => g.id === activeGroupId) || groups[0];
 
   const handleStartEditing = (userId: string) => {

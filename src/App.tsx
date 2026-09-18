@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { FamilyProvider, useFamily } from './context/FamilyContext';
+import { AuthScreen } from './components/AuthScreen';
 import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
 import { RadarMapView } from './components/RadarMapView';
@@ -19,8 +20,13 @@ import {
 } from 'lucide-react';
 
 function FamilyAppContent() {
-  const { activeTab, setActiveTab, tasks } = useFamily();
+  const { currentUser, activeTab, setActiveTab, tasks } = useFamily();
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+
+  // If user is not logged in, render the Login/Signup screen directly!
+  if (!currentUser) {
+    return <AuthScreen />;
+  }
 
   const pendingTasksCount = tasks.filter((t) => t.status === 'pending').length;
 
