@@ -18,6 +18,7 @@ export interface User {
     address: string;
     neighborhood?: string;
     speedText?: string;
+    accuracy?: number;
     updatedAt: string;
   };
 }

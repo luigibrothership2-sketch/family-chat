@@ -1,33 +1,25 @@
-import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
-import { User, FamilyGroup, Message, FamilyTask, AliasMap, CallSession, TaskStatus, MediaAttachment, UserAccount } from '../types';
-import { INITIAL_USERS, INITIAL_GROUPS, INITIAL_MESSAGES, INITIAL_TASKS, DEFAULT_ALIASES, AVATAR_PRESETS } from '../data/mockData';
-
-const STORAGE_VERSION = 'family_chat_clean_v2';
-
-// Check and clear old dummy data from prior iterations if present
-function purgeOldMockStorage() {
-  try {
-    const version = localStorage.getItem('family_chat_storage_ver');
-    const oldUser = localStorage.getItem('family_chat_current_user');
-    const oldGroups = localStorage.getItem('family_chat_groups');
-    const hasOldMock = oldUser === 'user-mom' || (oldGroups && oldGroups.includes('Jenkins Household'));
-
-    if (version !== STORAGE_VERSION || hasOldMock) {
-      localStorage.removeItem('family_chat_users');
-      localStorage.removeItem('family_chat_current_user');
-      localStorage.removeItem('family_chat_groups');
-      localStorage.removeItem('family_chat_messages');
-      localStorage.removeItem('family_chat_tasks');
-      localStorage.removeItem('family_chat_aliases');
-      localStorage.removeItem('family_chat_accounts');
-      localStorage.setItem('family_chat_storage_ver', STORAGE_VERSION);
-    }
-  } catch (err) {
-    console.error('Storage purge error:', err);
-  }
-}
-
-purgeOldMockStorage();
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
+import {
+  collection,
+  doc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  onSnapshot,
+} from 'firebase/firestore';
+import { db, ensureFirebaseAuth } from '../lib/firebase';
+import {
+  User,
+  FamilyGroup,
+  Message,
+  FamilyTask,
+  AliasMap,
+  CallSession,
+  TaskStatus,
+  MediaAttachment,
+  UserAccount,
+} from '../types';
+import { AVATAR_PRESETS } from '../data/mockData';
 
 interface FamilyContextType {
   currentUser: User | null;
@@ -46,7 +38,7 @@ interface FamilyContextType {
   activeTab: 'chat' | 'radar' | 'tasks' | 'members';
   setActiveTab: (tab: 'chat' | 'radar' | 'tasks' | 'members') => void;
   messages: Message[];
-  sendMessage: (content: { text?: string; media?: MediaAttachment; isImportant?: boolean }) => void;
+  sendMessage: (content: { text?: string; media?: MediaAttachment; isImportant?: boolean }) => Promise<void>;
   openSelfDestructMedia: (messageId: string) => void;
   purgeSelfDestructMedia: (messageId: string) => void;
   fastForwardTimer: (messageId: string) => void;
@@ -55,8 +47,12 @@ interface FamilyContextType {
   createTask: (task: Omit<FamilyTask, 'id' | 'createdAt'>) => void;
   updateTaskStatus: (taskId: string, status: TaskStatus) => void;
   deleteTask: (taskId: string) => void;
-  createGroup: (name: string, description: string, memberIds: string[]) => string;
-  addMemberBySearch: (groupId: string, query: string) => { success: boolean; message: string; user?: User };
+  createGroup: (name: string, description: string, memberIds: string[]) => Promise<string>;
+  addMemberBySearch: (groupId: string, query: string) => Promise<{ success: boolean; message: string; user?: User }>;
+  startDirectChat: (targetUserId: string) => void;
+  updateProfileAvatar: (newAvatarUrl: string) => Promise<void>;
+  isGpsActive: boolean;
+  enableGpsRadar: () => void;
   callSession: CallSession;
   startCall: (type: 'audio' | 'video', channelName: string, participantIds?: string[]) => void;
   endCall: () => void;
@@ -69,7 +65,7 @@ interface FamilyContextType {
   setIsAliasModalOpen: (open: boolean) => void;
   targetAliasUserId: string | null;
   setTargetAliasUserId: (id: string | null) => void;
-  login: (identifier: string, password?: string) => { success: boolean; error?: string };
+  login: (identifier: string, password?: string) => Promise<{ success: boolean; error?: string }>;
   signup: (params: {
     username: string;
     password: string;
@@ -79,8 +75,8 @@ interface FamilyContextType {
     phone?: string;
     familyName?: string;
     avatarUrl?: string;
-  }) => { success: boolean; error?: string };
-  registerChild: (username: string, password: string, fullName: string) => { success: boolean; user?: User; error?: string };
+  }) => Promise<{ success: boolean; error?: string }>;
+  registerChild: (username: string, password: string, fullName: string) => Promise<{ success: boolean; user?: User; error?: string }>;
   logout: () => void;
   pingMemberLocation: (userId: string) => void;
 }
@@ -88,7 +84,56 @@ interface FamilyContextType {
 const FamilyContext = createContext<FamilyContextType | null>(null);
 
 export function FamilyProvider({ children }: { children: React.ReactNode }) {
-  // Accounts (credentials)
+  // Local cached state for immediate responsiveness
+  const [currentUserId, setCurrentUserId] = useState<string | null>(() => {
+    return localStorage.getItem('family_chat_current_user') || null;
+  });
+
+  const [users, setUsers] = useState<User[]>(() => {
+    try {
+      const saved = localStorage.getItem('family_chat_users');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [groups, setGroups] = useState<FamilyGroup[]>(() => {
+    try {
+      const saved = localStorage.getItem('family_chat_groups');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [messages, setMessages] = useState<Message[]>(() => {
+    try {
+      const saved = localStorage.getItem('family_chat_messages');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [tasks, setTasks] = useState<FamilyTask[]>(() => {
+    try {
+      const saved = localStorage.getItem('family_chat_tasks');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [aliases, setAliases] = useState<AliasMap>(() => {
+    try {
+      const saved = localStorage.getItem('family_chat_aliases');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
   const [accounts, setAccounts] = useState<UserAccount[]>(() => {
     try {
       const saved = localStorage.getItem('family_chat_accounts');
@@ -98,72 +143,14 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     }
   });
 
-  // Users directory
-  const [users, setUsers] = useState<User[]>(() => {
-    try {
-      const saved = localStorage.getItem('family_chat_users');
-      return saved ? JSON.parse(saved) : INITIAL_USERS;
-    } catch {
-      return [];
-    }
-  });
-
-  // Current session user ID (null if not logged in)
-  const [currentUserId, setCurrentUserId] = useState<string | null>(() => {
-    return localStorage.getItem('family_chat_current_user') || null;
-  });
-
-  const [aliases, setAliases] = useState<AliasMap>(() => {
-    try {
-      const saved = localStorage.getItem('family_chat_aliases');
-      return saved ? JSON.parse(saved) : DEFAULT_ALIASES;
-    } catch {
-      return {};
-    }
-  });
-
-  const [groups, setGroups] = useState<FamilyGroup[]>(() => {
-    try {
-      const saved = localStorage.getItem('family_chat_groups');
-      return saved ? JSON.parse(saved) : INITIAL_GROUPS;
-    } catch {
-      return [];
-    }
-  });
-
-  const [activeGroupId, setActiveGroupId] = useState<string>(() => {
-    return groups[0]?.id || '';
-  });
-
-  const [activeConversationId, setActiveConversationId] = useState<string>(() => {
-    return groups[0]?.id || '';
-  });
-
+  const [activeGroupId, setActiveGroupId] = useState<string>('');
+  const [activeConversationId, setActiveConversationId] = useState<string>('');
   const [activeTab, setActiveTab] = useState<'chat' | 'radar' | 'tasks' | 'members'>('chat');
-
-  // Messages: starts completely empty for fresh real family use
-  const [messages, setMessages] = useState<Message[]>(() => {
-    try {
-      const saved = localStorage.getItem('family_chat_messages');
-      return saved ? JSON.parse(saved) : INITIAL_MESSAGES;
-    } catch {
-      return [];
-    }
-  });
-
-  // Tasks: starts completely empty for real family use
-  const [tasks, setTasks] = useState<FamilyTask[]>(() => {
-    try {
-      const saved = localStorage.getItem('family_chat_tasks');
-      return saved ? JSON.parse(saved) : INITIAL_TASKS;
-    } catch {
-      return [];
-    }
-  });
+  const [isGpsActive, setIsGpsActive] = useState<boolean>(false);
 
   // Modals
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
-  const [isAliasModalOpen, setIsAliasModalOpen] = useState(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
+  const [isAliasModalOpen, setIsAliasModalOpen] = useState<boolean>(false);
   const [targetAliasUserId, setTargetAliasUserId] = useState<string | null>(null);
 
   // Call session
@@ -179,15 +166,214 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     startTime: 0,
   });
 
-  // Persistence
+  // Ensure Firebase Auth is initialized on startup
   useEffect(() => {
-    localStorage.setItem('family_chat_accounts', JSON.stringify(accounts));
-  }, [accounts]);
+    ensureFirebaseAuth().catch((err) => console.warn('Firebase auth check:', err));
+  }, []);
 
+  // 1. Real-Time Firestore Sync: USERS
   useEffect(() => {
-    localStorage.setItem('family_chat_users', JSON.stringify(users));
-  }, [users]);
+    try {
+      const unsub = onSnapshot(
+        collection(db, 'users'),
+        (snapshot) => {
+          const remoteUsers: User[] = [];
+          const remoteAccounts: UserAccount[] = [];
 
+          snapshot.forEach((docSnap) => {
+            const data = docSnap.data() as User & { password?: string };
+            const u: User = {
+              id: docSnap.id,
+              username: data.username || docSnap.id,
+              fullName: data.fullName || 'Family Member',
+              email: data.email,
+              phone: data.phone,
+              avatarUrl: data.avatarUrl || AVATAR_PRESETS[0],
+              role: data.role || 'parent',
+              batteryLevel: typeof data.batteryLevel === 'number' ? data.batteryLevel : 90,
+              isCharging: data.isCharging ?? false,
+              isOnline: data.isOnline ?? false,
+              lastSeen: data.lastSeen || 'Recently active',
+              location: data.location || {
+                lat: 37.7749,
+                lng: -122.4194,
+                address: 'Home',
+                neighborhood: 'Family Area',
+                updatedAt: 'Just now',
+              },
+            };
+            remoteUsers.push(u);
+
+            remoteAccounts.push({
+              id: docSnap.id,
+              username: data.username || docSnap.id,
+              password: data.password || '1234',
+              fullName: data.fullName || 'Family Member',
+              role: data.role || 'parent',
+              email: data.email,
+              phone: data.phone,
+              avatarUrl: data.avatarUrl || AVATAR_PRESETS[0],
+            });
+          });
+
+          setUsers(remoteUsers);
+          setAccounts(remoteAccounts);
+          localStorage.setItem('family_chat_users', JSON.stringify(remoteUsers));
+          localStorage.setItem('family_chat_accounts', JSON.stringify(remoteAccounts));
+        },
+        (error) => {
+          console.warn('Firestore users listener fallback to local:', error);
+        }
+      );
+      return () => unsub();
+    } catch (e) {
+      console.warn('Could not bind users listener:', e);
+    }
+  }, []);
+
+  // 2. Real-Time Firestore Sync: GROUPS
+  useEffect(() => {
+    try {
+      const unsub = onSnapshot(
+        collection(db, 'groups'),
+        (snapshot) => {
+          const remoteGroups: FamilyGroup[] = [];
+          snapshot.forEach((docSnap) => {
+            const data = docSnap.data() as FamilyGroup;
+            remoteGroups.push({
+              id: docSnap.id,
+              name: data.name || 'Family Circle',
+              description: data.description || '',
+              avatarUrl: data.avatarUrl || 'https://images.unsplash.com/photo-1511895426328-dc8714191300?w=150&auto=format&fit=crop&q=80',
+              memberIds: data.memberIds || [],
+              createdById: data.createdById || '',
+              createdAt: data.createdAt || Date.now(),
+              emergencyNotice: data.emergencyNotice,
+            });
+          });
+
+          // Sort by creation date
+          remoteGroups.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+          setGroups(remoteGroups);
+          localStorage.setItem('family_chat_groups', JSON.stringify(remoteGroups));
+        },
+        (error) => {
+          console.warn('Firestore groups listener note:', error);
+        }
+      );
+      return () => unsub();
+    } catch (e) {
+      console.warn('Could not bind groups listener:', e);
+    }
+  }, []);
+
+  // 3. Real-Time Firestore Sync: MESSAGES
+  useEffect(() => {
+    try {
+      const unsub = onSnapshot(
+        collection(db, 'messages'),
+        (snapshot) => {
+          const remoteMessages: Message[] = [];
+          snapshot.forEach((docSnap) => {
+            const data = docSnap.data() as Message;
+            remoteMessages.push({
+              id: docSnap.id,
+              conversationId: data.conversationId,
+              isGroup: data.isGroup ?? false,
+              senderId: data.senderId,
+              text: data.text,
+              timestamp: data.timestamp || Date.now(),
+              status: data.status || 'delivered',
+              media: data.media,
+              reactions: data.reactions || {},
+              isImportant: data.isImportant ?? false,
+            });
+          });
+
+          // Sort chronologically ascending
+          remoteMessages.sort((a, b) => a.timestamp - b.timestamp);
+
+          setMessages(remoteMessages);
+          localStorage.setItem('family_chat_messages', JSON.stringify(remoteMessages));
+        },
+        (error) => {
+          console.warn('Firestore messages listener note:', error);
+        }
+      );
+      return () => unsub();
+    } catch (e) {
+      console.warn('Could not bind messages listener:', e);
+    }
+  }, []);
+
+  // 4. Real-Time Firestore Sync: TASKS
+  useEffect(() => {
+    try {
+      const unsub = onSnapshot(
+        collection(db, 'tasks'),
+        (snapshot) => {
+          const remoteTasks: FamilyTask[] = [];
+          snapshot.forEach((docSnap) => {
+            const data = docSnap.data() as FamilyTask;
+            remoteTasks.push({
+              id: docSnap.id,
+              groupId: data.groupId || '',
+              title: data.title || '',
+              description: data.description,
+              assignedToId: data.assignedToId || '',
+              createdById: data.createdById || '',
+              status: data.status || 'pending',
+              priority: data.priority || 'medium',
+              dueDate: data.dueDate || '',
+              category: data.category || 'chores',
+              createdAt: data.createdAt || Date.now(),
+              completedAt: data.completedAt,
+            });
+          });
+
+          remoteTasks.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+          setTasks(remoteTasks);
+          localStorage.setItem('family_chat_tasks', JSON.stringify(remoteTasks));
+        },
+        (error) => {
+          console.warn('Firestore tasks listener note:', error);
+        }
+      );
+      return () => unsub();
+    } catch (e) {
+      console.warn('Could not bind tasks listener:', e);
+    }
+  }, []);
+
+  // 5. Real-Time Firestore Sync: NICKNAMES
+  useEffect(() => {
+    if (!currentUserId) return;
+    try {
+      const unsub = onSnapshot(
+        collection(db, 'nicknames'),
+        (snapshot) => {
+          const newAliases: AliasMap = {};
+          snapshot.forEach((docSnap) => {
+            const data = docSnap.data() as { ownerId: string; targetId: string; alias: string };
+            if (data.ownerId === currentUserId && data.targetId && data.alias) {
+              newAliases[data.targetId] = data.alias;
+            }
+          });
+          setAliases(newAliases);
+          localStorage.setItem('family_chat_aliases', JSON.stringify(newAliases));
+        },
+        (error) => {
+          console.warn('Firestore nicknames listener note:', error);
+        }
+      );
+      return () => unsub();
+    } catch (e) {
+      console.warn('Could not bind nicknames listener:', e);
+    }
+  }, [currentUserId]);
+
+  // Ensure current user is tracked
   useEffect(() => {
     if (currentUserId) {
       localStorage.setItem('family_chat_current_user', currentUserId);
@@ -196,62 +382,159 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     }
   }, [currentUserId]);
 
+  // Set default active conversation if none selected
   useEffect(() => {
-    localStorage.setItem('family_chat_aliases', JSON.stringify(aliases));
-  }, [aliases]);
-
-  useEffect(() => {
-    localStorage.setItem('family_chat_groups', JSON.stringify(groups));
-  }, [groups]);
-
-  useEffect(() => {
-    localStorage.setItem('family_chat_messages', JSON.stringify(messages));
-  }, [messages]);
-
-  useEffect(() => {
-    localStorage.setItem('family_chat_tasks', JSON.stringify(tasks));
-  }, [tasks]);
-
-  // Self-destruct interval tick: checks every 3 seconds if any self-destruct media has expired
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const now = Date.now();
-      let hasChange = false;
-
-      const updated = messages.map((msg) => {
-        if (msg.media && msg.media.isSelfDestruct && !msg.media.isExpired) {
-          if (msg.media.expiresAt && now >= msg.media.expiresAt) {
-            hasChange = true;
-            return {
-              ...msg,
-              media: {
-                ...msg.media,
-                isExpired: true,
-                url: '', // masked/purged
-              },
-            };
-          }
-        }
-        return msg;
-      });
-
-      if (hasChange) {
-        setMessages(updated);
-      }
-    }, 3000);
-
-    return () => clearInterval(timer);
-  }, [messages]);
-
-  // Keep active conversation aligned if groups change
-  useEffect(() => {
-    if (!activeGroupId && groups.length > 0) {
-      setActiveGroupId(groups[0].id);
-    }
     if (!activeConversationId && groups.length > 0) {
+      setActiveGroupId(groups[0].id);
       setActiveConversationId(groups[0].id);
     }
-  }, [groups, activeGroupId, activeConversationId]);
+  }, [groups, activeConversationId]);
+
+  // 1-Hour Self-Destruct Periodic Auto-Purge:
+  // Verifies every 2 seconds. When 1 hour has elapsed, permanently deletes media from Firestore!
+  useEffect(() => {
+    const checkExpiry = async () => {
+      const now = Date.now();
+      for (const msg of messages) {
+        if (msg.media && msg.media.isSelfDestruct && !msg.media.isExpired) {
+          if (msg.media.expiresAt && now >= msg.media.expiresAt) {
+            // Permanently purge from Firestore
+            try {
+              const msgRef = doc(db, 'messages', msg.id);
+              await updateDoc(msgRef, {
+                'media.url': '',
+                'media.isExpired': true,
+                'media.destroyedAt': now,
+              });
+            } catch (err) {
+              console.warn('Error purging self destruct media in Firestore:', err);
+              // Fallback local purge
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === msg.id && m.media
+                    ? { ...m, media: { ...m.media, url: '', isExpired: true } }
+                    : m
+                )
+              );
+            }
+          }
+        }
+      }
+    };
+
+    const interval = setInterval(checkExpiry, 2000);
+    return () => clearInterval(interval);
+  }, [messages]);
+
+  // GENUINE LIVE GPS TRACKING RADAR STREAMING
+  const enableGpsRadar = useCallback(() => {
+    if (!currentUserId || typeof navigator === 'undefined' || !navigator.geolocation) {
+      return;
+    }
+
+    setIsGpsActive(true);
+
+    // Initial position
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude, longitude, accuracy, speed } = pos.coords;
+        try {
+          const userRef = doc(db, 'users', currentUserId);
+          await updateDoc(userRef, {
+            location: {
+              lat: latitude,
+              lng: longitude,
+              accuracy: Math.round(accuracy || 10),
+              address: `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`,
+              neighborhood: 'Live GPS Broadcast',
+              speedText: speed ? `${Math.round(speed * 3.6)} km/h` : 'Live',
+              updatedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            },
+            isOnline: true,
+            lastSeen: 'Active now',
+          });
+        } catch (e) {
+          console.warn('Could not update initial GPS in Firestore:', e);
+        }
+      },
+      (err) => {
+        console.warn('Geolocation initial prompt notice:', err.message);
+      },
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 10000 }
+    );
+  }, [currentUserId]);
+
+  // Active continuous GPS & Battery streaming while logged in
+  useEffect(() => {
+    if (!currentUserId) {
+      setIsGpsActive(false);
+      return;
+    }
+
+    let watchId: number | null = null;
+
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      watchId = navigator.geolocation.watchPosition(
+        async (pos) => {
+          setIsGpsActive(true);
+          const { latitude, longitude, accuracy, speed } = pos.coords;
+          try {
+            const userRef = doc(db, 'users', currentUserId);
+            await updateDoc(userRef, {
+              location: {
+                lat: latitude,
+                lng: longitude,
+                accuracy: Math.round(accuracy || 10),
+                address: `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`,
+                neighborhood: 'Live GPS Broadcast',
+                speedText: speed ? `${Math.round(speed * 3.6)} km/h` : 'Live',
+                updatedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              },
+              isOnline: true,
+            });
+          } catch (e) {
+            console.warn('Error streaming GPS position to Firestore:', e);
+          }
+        },
+        (err) => {
+          console.warn('GPS watchPosition notice:', err.message);
+        },
+        { enableHighAccuracy: true, timeout: 25000, maximumAge: 15000 }
+      );
+    }
+
+    // Battery streaming
+    if (typeof navigator !== 'undefined' && 'getBattery' in navigator) {
+      (navigator as any)
+        .getBattery()
+        .then((battery: any) => {
+          const syncBattery = async () => {
+            const level = Math.round(battery.level * 100);
+            const isCharging = Boolean(battery.charging);
+            try {
+              const userRef = doc(db, 'users', currentUserId);
+              await updateDoc(userRef, {
+                batteryLevel: level,
+                isCharging: isCharging,
+              });
+            } catch (e) {
+              console.warn('Battery sync error:', e);
+            }
+          };
+
+          syncBattery();
+          battery.addEventListener('levelchange', syncBattery);
+          battery.addEventListener('chargingchange', syncBattery);
+        })
+        .catch((e: any) => console.warn('Battery API notice:', e));
+    }
+
+    return () => {
+      if (watchId !== null && typeof navigator !== 'undefined' && navigator.geolocation) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+    };
+  }, [currentUserId]);
 
   const currentUser = useMemo(() => {
     if (!currentUserId) return null;
@@ -262,7 +545,6 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     return users.find((u) => u.id === userId);
   };
 
-  // Custom Family Nickname resolution: replaces raw IDs/usernames everywhere
   const getDisplayName = (userId: string): string => {
     if (aliases[userId]) {
       return aliases[userId];
@@ -271,9 +553,28 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     return user ? user.fullName : userId;
   };
 
-  const updateAlias = (userId: string, alias: string) => {
+  const updateAlias = async (userId: string, alias: string) => {
+    if (!currentUserId) return;
+    const trimmed = alias.trim();
+    const aliasDocId = `${currentUserId}_${userId}`;
+
+    try {
+      const aliasRef = doc(db, 'nicknames', aliasDocId);
+      if (trimmed) {
+        await setDoc(aliasRef, {
+          ownerId: currentUserId,
+          targetId: userId,
+          alias: trimmed,
+          updatedAt: Date.now(),
+        });
+      } else {
+        await deleteDoc(aliasRef);
+      }
+    } catch (err) {
+      console.warn('Nickname Firestore sync error:', err);
+    }
+
     setAliases((prev) => {
-      const trimmed = alias.trim();
       const updated = { ...prev };
       if (trimmed) {
         updated[userId] = trimmed;
@@ -284,7 +585,8 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     });
   };
 
-  const sendMessage = ({
+  // SEND MESSAGE: Inserts into Firestore `messages` collection
+  const sendMessage = async ({
     text,
     media,
     isImportant,
@@ -294,151 +596,247 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     isImportant?: boolean;
   }) => {
     if (!currentUser) return;
+    const msgId = `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const conversationId = activeConversationId || activeGroupId;
+
     const newMsg: Message = {
-      id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-      conversationId: activeConversationId,
-      isGroup: !activeConversationId.startsWith('user-'),
+      id: msgId,
+      conversationId: conversationId,
+      isGroup: !conversationId.startsWith('user-'),
       senderId: currentUser.id,
       text: text?.trim(),
       timestamp: Date.now(),
       status: 'delivered',
-      media,
-      isImportant,
+      media: media || undefined,
+      isImportant: Boolean(isImportant),
       reactions: {},
     };
 
+    // Optimistic local add
     setMessages((prev) => [...prev, newMsg]);
+
+    try {
+      await setDoc(doc(db, 'messages', msgId), newMsg);
+    } catch (err) {
+      console.warn('Error sending message to Firestore:', err);
+    }
   };
 
-  // Recipient opens self-destruct media: exactly 1 hour countdown starts
-  const openSelfDestructMedia = (messageId: string) => {
+  // RECIPIENT OPENS SELF-DESTRUCT MEDIA: Initiates the 1-hour countdown in Firestore
+  const openSelfDestructMedia = async (messageId: string) => {
+    const msg = messages.find((m) => m.id === messageId);
+    if (!msg || !msg.media || !msg.media.isSelfDestruct || msg.media.openedAt) {
+      return;
+    }
+
+    const now = Date.now();
+    const durationMs = (msg.media.selfDestructMinutes || 60) * 60 * 1000;
+    const expiresAt = now + durationMs;
+
+    try {
+      const msgRef = doc(db, 'messages', messageId);
+      await updateDoc(msgRef, {
+        'media.openedAt': now,
+        'media.expiresAt': expiresAt,
+      });
+    } catch (err) {
+      console.warn('Error updating openedAt in Firestore:', err);
+    }
+
     setMessages((prev) =>
-      prev.map((m) => {
-        if (m.id === messageId && m.media && m.media.isSelfDestruct) {
-          const now = Date.now();
-          const durationMs = (m.media.selfDestructMinutes || 60) * 60 * 1000;
-          return {
-            ...m,
-            media: {
-              ...m.media,
-              openedAt: m.media.openedAt || now,
-              expiresAt: m.media.expiresAt || now + durationMs,
-            },
-          };
-        }
-        return m;
-      })
-    );
-  };
-
-  const purgeSelfDestructMedia = (messageId: string) => {
-    setMessages((prev) =>
-      prev.map((m) => {
-        if (m.id === messageId && m.media) {
-          return {
-            ...m,
-            media: {
-              ...m.media,
-              isExpired: true,
-              url: '',
-            },
-          };
-        }
-        return m;
-      })
-    );
-  };
-
-  const fastForwardTimer = (messageId: string) => {
-    setMessages((prev) =>
-      prev.map((m) => {
-        if (m.id === messageId && m.media) {
-          return {
-            ...m,
-            media: {
-              ...m.media,
-              openedAt: Date.now() - 3600000,
-              expiresAt: Date.now() - 1000,
-              isExpired: true,
-              url: '',
-            },
-          };
-        }
-        return m;
-      })
-    );
-  };
-
-  const reactToMessage = (messageId: string, emoji: string) => {
-    if (!currentUser) return;
-    setMessages((prev) =>
-      prev.map((m) => {
-        if (m.id === messageId) {
-          const reactions = { ...(m.reactions || {}) };
-          const existing = reactions[emoji] || [];
-          if (existing.includes(currentUser.id)) {
-            reactions[emoji] = existing.filter((id) => id !== currentUser.id);
-            if (reactions[emoji].length === 0) {
-              delete reactions[emoji];
-            }
-          } else {
-            reactions[emoji] = [...existing, currentUser.id];
-          }
-          return { ...m, reactions };
-        }
-        return m;
-      })
-    );
-  };
-
-  // Shared Family Tasks
-  const createTask = (taskData: Omit<FamilyTask, 'id' | 'createdAt'>) => {
-    const newTask: FamilyTask = {
-      ...taskData,
-      id: `task-${Date.now()}`,
-      createdAt: Date.now(),
-    };
-    setTasks((prev) => [newTask, ...prev]);
-  };
-
-  const updateTaskStatus = (taskId: string, status: TaskStatus) => {
-    setTasks((prev) =>
-      prev.map((t) =>
-        t.id === taskId
+      prev.map((m) =>
+        m.id === messageId && m.media
           ? {
-              ...t,
-              status,
-              completedAt: status === 'completed' ? Date.now() : undefined,
+              ...m,
+              media: {
+                ...m.media,
+                openedAt: now,
+                expiresAt: expiresAt,
+              },
             }
-          : t
+          : m
       )
     );
   };
 
-  const deleteTask = (taskId: string) => {
-    setTasks((prev) => prev.filter((t) => t.id !== taskId));
+  // PURGE SELF-DESTRUCT MEDIA: Permanently removes the media payload from the cloud database
+  const purgeSelfDestructMedia = async (messageId: string) => {
+    const now = Date.now();
+    try {
+      const msgRef = doc(db, 'messages', messageId);
+      await updateDoc(msgRef, {
+        'media.url': '',
+        'media.isExpired': true,
+        'media.destroyedAt': now,
+      });
+    } catch (err) {
+      console.warn('Error purging media from Firestore:', err);
+    }
+
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === messageId && m.media
+          ? {
+              ...m,
+              media: {
+                ...m.media,
+                url: '',
+                isExpired: true,
+                destroyedAt: now,
+              },
+            }
+          : m
+      )
+    );
   };
 
-  // Group creation & member addition
-  const createGroup = (name: string, description: string, memberIds: string[]): string => {
+  // FAST FORWARD 1-HOUR (TESTING HELPER)
+  const fastForwardTimer = async (messageId: string) => {
+    const expiredTime = Date.now() - 1000;
+    try {
+      const msgRef = doc(db, 'messages', messageId);
+      await updateDoc(msgRef, {
+        'media.openedAt': Date.now() - 3600000,
+        'media.expiresAt': expiredTime,
+        'media.isExpired': true,
+        'media.url': '',
+      });
+    } catch (err) {
+      console.warn('Fast forward Firestore error:', err);
+    }
+
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === messageId && m.media
+          ? {
+              ...m,
+              media: {
+                ...m.media,
+                openedAt: Date.now() - 3600000,
+                expiresAt: expiredTime,
+                isExpired: true,
+                url: '',
+              },
+            }
+          : m
+      )
+    );
+  };
+
+  const reactToMessage = async (messageId: string, emoji: string) => {
+    if (!currentUser) return;
+    const msg = messages.find((m) => m.id === messageId);
+    if (!msg) return;
+
+    const reactions = { ...(msg.reactions || {}) };
+    const existing = reactions[emoji] || [];
+    let updatedList: string[];
+
+    if (existing.includes(currentUser.id)) {
+      updatedList = existing.filter((id) => id !== currentUser.id);
+      if (updatedList.length === 0) {
+        delete reactions[emoji];
+      } else {
+        reactions[emoji] = updatedList;
+      }
+    } else {
+      updatedList = [...existing, currentUser.id];
+      reactions[emoji] = updatedList;
+    }
+
+    try {
+      const msgRef = doc(db, 'messages', messageId);
+      await updateDoc(msgRef, { reactions });
+    } catch (err) {
+      console.warn('Reaction update error:', err);
+    }
+
+    setMessages((prev) =>
+      prev.map((m) => (m.id === messageId ? { ...m, reactions } : m))
+    );
+  };
+
+  // SHARED TASKS
+  const createTask = async (taskData: Omit<FamilyTask, 'id' | 'createdAt'>) => {
+    const taskId = `task-${Date.now()}`;
+    const newTask: FamilyTask = {
+      ...taskData,
+      id: taskId,
+      createdAt: Date.now(),
+    };
+
+    setTasks((prev) => [newTask, ...prev]);
+
+    try {
+      await setDoc(doc(db, 'tasks', taskId), newTask);
+    } catch (err) {
+      console.warn('Error creating task in Firestore:', err);
+    }
+  };
+
+  const updateTaskStatus = async (taskId: string, status: TaskStatus) => {
+    const completedAt = status === 'completed' ? Date.now() : undefined;
+
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === taskId ? { ...t, status, completedAt } : t
+      )
+    );
+
+    try {
+      const taskRef = doc(db, 'tasks', taskId);
+      await updateDoc(taskRef, {
+        status,
+        ...(completedAt ? { completedAt } : {}),
+      });
+    } catch (err) {
+      console.warn('Error updating task in Firestore:', err);
+    }
+  };
+
+  const deleteTask = async (taskId: string) => {
+    setTasks((prev) => prev.filter((t) => t.id !== taskId));
+    try {
+      await deleteDoc(doc(db, 'tasks', taskId));
+    } catch (err) {
+      console.warn('Error deleting task from Firestore:', err);
+    }
+  };
+
+  // CREATE PERMANENT FAMILY GROUP / CIRCLE
+  const createGroup = async (name: string, description: string, memberIds: string[]): Promise<string> => {
     if (!currentUser) return '';
     const newGroupId = `group-${Date.now()}`;
+    const allMembers = Array.from(new Set([currentUser.id, ...memberIds]));
+
     const newGroup: FamilyGroup = {
       id: newGroupId,
-      name,
-      description,
+      name: name.trim(),
+      description: description.trim(),
       avatarUrl: 'https://images.unsplash.com/photo-1511895426328-dc8714191300?w=150&auto=format&fit=crop&q=80',
-      memberIds: Array.from(new Set([currentUser.id, ...memberIds])),
+      memberIds: allMembers,
       createdById: currentUser.id,
       createdAt: Date.now(),
     };
-    setGroups((prev) => [...prev, newGroup]);
+
+    setGroups((prev) => [newGroup, ...prev]);
     setActiveGroupId(newGroupId);
     setActiveConversationId(newGroupId);
+
+    try {
+      await setDoc(doc(db, 'groups', newGroupId), newGroup);
+    } catch (err) {
+      console.warn('Error saving group to Firestore:', err);
+    }
+
     return newGroupId;
   };
 
-  const addMemberBySearch = (groupId: string, query: string): { success: boolean; message: string; user?: User } => {
+  // ADD MEMBER BY SEARCH
+  const addMemberBySearch = async (
+    groupId: string,
+    query: string
+  ): Promise<{ success: boolean; message: string; user?: User }> => {
     const cleanQuery = query.trim().toLowerCase();
     if (!cleanQuery) return { success: false, message: 'Please enter a username, email, or phone number.' };
 
@@ -461,9 +859,18 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
       return { success: false, message: `${getDisplayName(found.id)} is already a member of this group.` };
     }
 
+    const updatedMembers = [...targetGroup.memberIds, found.id];
+
     setGroups((prev) =>
-      prev.map((g) => (g.id === groupId ? { ...g, memberIds: [...g.memberIds, found.id] } : g))
+      prev.map((g) => (g.id === groupId ? { ...g, memberIds: updatedMembers } : g))
     );
+
+    try {
+      const groupRef = doc(db, 'groups', groupId);
+      await updateDoc(groupRef, { memberIds: updatedMembers });
+    } catch (err) {
+      console.warn('Error updating group members in Firestore:', err);
+    }
 
     return {
       success: true,
@@ -472,7 +879,28 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     };
   };
 
-  // Call actions
+  // START 1-ON-1 DIRECT CHAT
+  const startDirectChat = (targetUserId: string) => {
+    setActiveConversationId(targetUserId);
+    setActiveTab('chat');
+  };
+
+  // PROFILE AVATAR CUSTOMIZATION
+  const updateProfileAvatar = async (newAvatarUrl: string) => {
+    if (!currentUser) return;
+    try {
+      const userRef = doc(db, 'users', currentUser.id);
+      await updateDoc(userRef, { avatarUrl: newAvatarUrl });
+    } catch (err) {
+      console.warn('Error updating avatar in Firestore:', err);
+    }
+
+    setUsers((prev) =>
+      prev.map((u) => (u.id === currentUser.id ? { ...u, avatarUrl: newAvatarUrl } : u))
+    );
+  };
+
+  // CALL ACTIONS
   const startCall = (type: 'audio' | 'video', channelName: string, participantIds: string[] = []) => {
     if (!currentUser) return;
     const defaultParticipants =
@@ -494,98 +922,68 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
   };
 
   const endCall = () => {
-    setCallSession((prev) => ({
-      ...prev,
-      isActive: false,
-    }));
+    setCallSession((prev) => ({ ...prev, isActive: false }));
   };
 
   const toggleMute = () => {
-    setCallSession((prev) => ({
-      ...prev,
-      isMuted: !prev.isMuted,
-    }));
+    setCallSession((prev) => ({ ...prev, isMuted: !prev.isMuted }));
   };
 
   const toggleCamera = () => {
-    setCallSession((prev) => ({
-      ...prev,
-      isCameraOff: !prev.isCameraOff,
-    }));
+    setCallSession((prev) => ({ ...prev, isCameraOff: !prev.isCameraOff }));
   };
 
   const toggleScreenShare = () => {
-    setCallSession((prev) => ({
-      ...prev,
-      isScreenSharing: !prev.isScreenSharing,
-    }));
+    setCallSession((prev) => ({ ...prev, isScreenSharing: !prev.isScreenSharing }));
   };
 
-  // Login: authenticate with username, email, or phone + password
-  const login = (identifier: string, password?: string): { success: boolean; error?: string } => {
+  // LOGIN: authenticates with username, email, or phone + password
+  const login = async (
+    identifier: string,
+    password?: string
+  ): Promise<{ success: boolean; error?: string }> => {
     const clean = identifier.trim().toLowerCase();
     if (!clean) return { success: false, error: 'Please enter your username, email, or phone number.' };
 
-    // Check existing accounts
-    const account = accounts.find((acc) => {
+    await ensureFirebaseAuth();
+
+    // Check users loaded from Firestore or local cache
+    const matchedAccount = accounts.find((acc) => {
       const matchUsername = acc.username.toLowerCase() === clean;
       const matchEmail = acc.email && acc.email.toLowerCase() === clean;
       const matchPhone = acc.phone && acc.phone.replace(/\D/g, '') === clean.replace(/\D/g, '');
       return matchUsername || matchEmail || matchPhone;
     });
 
-    if (!account) {
+    if (!matchedAccount) {
       return {
         success: false,
-        error: 'No account found matching this credential. Please switch to the "Sign Up" tab to create your family account.',
+        error: 'No registered family member found matching this credential. Please sign up to create your account.',
       };
     }
 
-    if (password && account.password && account.password !== password) {
+    if (password && matchedAccount.password && matchedAccount.password !== password) {
       return {
         success: false,
         error: 'Incorrect password. Please verify and try again.',
       };
     }
 
-    // Account matched! Ensure user object is present in users
-    let userObj = users.find((u) => u.id === account.id);
-    if (!userObj) {
-      userObj = {
-        id: account.id,
-        username: account.username,
-        fullName: account.fullName,
-        email: account.email,
-        phone: account.phone,
-        avatarUrl: account.avatarUrl || AVATAR_PRESETS[0],
-        role: account.role,
-        batteryLevel: 85,
-        isCharging: false,
+    setCurrentUserId(matchedAccount.id);
+
+    // Update online status in Firestore
+    try {
+      const userRef = doc(db, 'users', matchedAccount.id);
+      await updateDoc(userRef, {
         isOnline: true,
         lastSeen: 'Active now',
-        location: {
-          lat: 37.7749,
-          lng: -122.4194,
-          address: 'Home Residence',
-          neighborhood: 'Family Circle',
-          speedText: 'Stationary',
-          updatedAt: 'Active now',
-        },
-      };
-      setUsers((prev) => [...prev, userObj!]);
-    } else {
-      // Mark as online
-      setUsers((prev) =>
-        prev.map((u) =>
-          u.id === userObj!.id ? { ...u, isOnline: true, lastSeen: 'Active now' } : u
-        )
-      );
+      });
+    } catch (e) {
+      console.warn('Could not update user online status in Firestore:', e);
     }
 
-    setCurrentUserId(account.id);
-
-    // Set active conversation to first group or user's group
-    const targetGroup = groups.find((g) => g.memberIds.includes(account.id)) || groups[0];
+    // Set active conversation
+    const targetGroup = groups.find((g) => g.memberIds.includes(matchedAccount.id)) || groups[0];
     if (targetGroup) {
       setActiveGroupId(targetGroup.id);
       setActiveConversationId(targetGroup.id);
@@ -595,8 +993,8 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     return { success: true };
   };
 
-  // Signup: Register family member and optionally create the initial Family Group Circle
-  const signup = ({
+  // SIGNUP: Register family member and save to Firestore
+  const signup = async ({
     username,
     password,
     fullName,
@@ -614,11 +1012,13 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     phone?: string;
     familyName?: string;
     avatarUrl?: string;
-  }): { success: boolean; error?: string } => {
+  }): Promise<{ success: boolean; error?: string }> => {
     const cleanUsername = username.trim().toLowerCase().replace(/\s+/g, '_');
     if (!cleanUsername) return { success: false, error: 'Username is required.' };
     if (!password || password.length < 3) return { success: false, error: 'Password must be at least 3 characters.' };
     if (!fullName.trim()) return { success: false, error: 'Full name is required.' };
+
+    await ensureFirebaseAuth();
 
     const exists = accounts.some((acc) => acc.username.toLowerCase() === cleanUsername);
     if (exists) {
@@ -626,11 +1026,80 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     }
 
     const newId = `user-${cleanUsername}-${Date.now().toString(36)}`;
-    const chosenAvatar =
-      avatarUrl ||
-      AVATAR_PRESETS[Math.floor(Math.random() * AVATAR_PRESETS.length)];
+    const chosenAvatar = avatarUrl || AVATAR_PRESETS[Math.floor(Math.random() * AVATAR_PRESETS.length)];
 
-    const newAccount: UserAccount = {
+    const newUserData = {
+      id: newId,
+      username: cleanUsername,
+      password,
+      fullName: fullName.trim(),
+      role,
+      email: email?.trim() || '',
+      phone: phone?.trim() || '',
+      avatarUrl: chosenAvatar,
+      batteryLevel: 95,
+      isCharging: false,
+      isOnline: true,
+      lastSeen: 'Active now',
+      location: {
+        lat: 37.7749 + (Math.random() - 0.5) * 0.02,
+        lng: -122.4194 + (Math.random() - 0.5) * 0.02,
+        address: 'Home Residence',
+        neighborhood: 'Family Circle',
+        speedText: 'Stationary',
+        accuracy: 12,
+        updatedAt: 'Just now',
+      },
+      createdAt: Date.now(),
+    };
+
+    // Save to Firestore
+    try {
+      await setDoc(doc(db, 'users', newId), newUserData);
+    } catch (err) {
+      console.warn('Error creating user in Firestore (saved locally):', err);
+    }
+
+    // If family name was provided, create initial group in Firestore
+    if (familyName && familyName.trim()) {
+      const initialGroupId = `group-${Date.now()}`;
+      const initialGroup: FamilyGroup = {
+        id: initialGroupId,
+        name: familyName.trim(),
+        description: 'Our primary family circle',
+        avatarUrl: 'https://images.unsplash.com/photo-1511895426328-dc8714191300?w=150&auto=format&fit=crop&q=80',
+        memberIds: [newId],
+        createdById: newId,
+        createdAt: Date.now(),
+      };
+
+      try {
+        await setDoc(doc(db, 'groups', initialGroupId), initialGroup);
+      } catch (err) {
+        console.warn('Error creating initial family group in Firestore:', err);
+      }
+
+      setGroups((prev) => [initialGroup, ...prev]);
+      setActiveGroupId(initialGroupId);
+      setActiveConversationId(initialGroupId);
+    }
+
+    const newUserObj: User = {
+      id: newId,
+      username: cleanUsername,
+      fullName: fullName.trim(),
+      email: email?.trim() || undefined,
+      phone: phone?.trim() || undefined,
+      avatarUrl: chosenAvatar,
+      role,
+      batteryLevel: 95,
+      isCharging: false,
+      isOnline: true,
+      lastSeen: 'Active now',
+      location: newUserData.location,
+    };
+
+    const newAccountObj: UserAccount = {
       id: newId,
       username: cleanUsername,
       password,
@@ -641,155 +1110,74 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
       avatarUrl: chosenAvatar,
     };
 
-    const newUser: User = {
-      id: newId,
-      username: cleanUsername,
-      fullName: fullName.trim(),
-      email: email?.trim() || undefined,
-      phone: phone?.trim() || undefined,
-      avatarUrl: chosenAvatar,
-      role,
-      batteryLevel: 92,
-      isCharging: false,
-      isOnline: true,
-      lastSeen: 'Active now',
-      location: {
-        lat: 37.7749,
-        lng: -122.4194,
-        address: 'Home Residence',
-        neighborhood: 'Family Circle',
-        speedText: 'Stationary',
-        updatedAt: 'Just now',
-      },
-    };
-
-    // Save account & user
-    setAccounts((prev) => [...prev, newAccount]);
-    setUsers((prev) => [...prev, newUser]);
-
-    // Create or join family group circle
-    let groupIdToSelect = activeGroupId;
-    const groupTitle = familyName?.trim() || (groups.length === 0 ? `${fullName.trim()}'s Family 🏡` : null);
-
-    if (groupTitle) {
-      const newGroupId = `group-${Date.now()}`;
-      const newGroup: FamilyGroup = {
-        id: newGroupId,
-        name: groupTitle,
-        description: 'Our private family circle for daily updates, tasks, and safety radar.',
-        avatarUrl: 'https://images.unsplash.com/photo-1511895426328-dc8714191300?w=150&auto=format&fit=crop&q=80',
-        memberIds: [newId],
-        createdById: newId,
-        createdAt: Date.now(),
-      };
-      setGroups((prev) => [...prev, newGroup]);
-      groupIdToSelect = newGroupId;
-    } else if (groups.length > 0) {
-      // Add member to existing first group
-      setGroups((prev) =>
-        prev.map((g, idx) => (idx === 0 ? { ...g, memberIds: [...g.memberIds, newId] } : g))
-      );
-      groupIdToSelect = groups[0].id;
-    }
-
+    setUsers((prev) => [...prev, newUserObj]);
+    setAccounts((prev) => [...prev, newAccountObj]);
     setCurrentUserId(newId);
-    setActiveGroupId(groupIdToSelect);
-    setActiveConversationId(groupIdToSelect);
     setIsAuthModalOpen(false);
+
+    // Trigger GPS streaming immediately upon account creation
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          updateDoc(doc(db, 'users', newId), {
+            'location.lat': pos.coords.latitude,
+            'location.lng': pos.coords.longitude,
+            'location.accuracy': Math.round(pos.coords.accuracy || 10),
+            'location.updatedAt': 'Just now',
+          }).catch(() => {});
+        },
+        () => {},
+        { enableHighAccuracy: true }
+      );
+    }
 
     return { success: true };
   };
 
-  // Register Child: COPPA-safe kid account requiring ONLY username + password (no email or phone)
-  const registerChild = (
+  // COPPA-safe register child (username + password, no email/phone)
+  const registerChild = async (
     username: string,
     password: string,
     fullName: string
-  ): { success: boolean; user?: User; error?: string } => {
-    const cleanUsername = username.trim().toLowerCase().replace(/\s+/g, '_');
-    if (!cleanUsername) return { success: false, error: 'Child username is required.' };
-    if (!fullName.trim()) return { success: false, error: 'Child name is required.' };
+  ): Promise<{ success: boolean; user?: User; error?: string }> => {
+    const res = await signup({
+      username,
+      password,
+      fullName,
+      role: 'child',
+    });
 
-    const exists = accounts.some((acc) => acc.username.toLowerCase() === cleanUsername);
-    if (exists) {
-      return { success: false, error: 'That username is already taken. Please choose another.' };
+    if (res.success) {
+      const created = users.find((u) => u.username.toLowerCase() === username.trim().toLowerCase());
+      return { success: true, user: created };
     }
 
-    const childId = `user-child-${cleanUsername}-${Date.now().toString(36)}`;
-    const childAvatar = 'https://images.unsplash.com/photo-1543610892-0b1f7e6d8ac1?w=150&auto=format&fit=crop&q=80';
-
-    const childAccount: UserAccount = {
-      id: childId,
-      username: cleanUsername,
-      password: password || '1234',
-      fullName: fullName.trim(),
-      role: 'child',
-      avatarUrl: childAvatar,
-    };
-
-    const childUser: User = {
-      id: childId,
-      username: cleanUsername,
-      fullName: fullName.trim(),
-      role: 'child',
-      avatarUrl: childAvatar,
-      batteryLevel: 95,
-      isCharging: true,
-      isOnline: true,
-      lastSeen: 'Active now',
-      location: {
-        lat: 37.7749,
-        lng: -122.4194,
-        address: 'Home Residence',
-        neighborhood: 'Family Circle',
-        speedText: 'Stationary',
-        updatedAt: 'Active now',
-      },
-    };
-
-    setAccounts((prev) => [...prev, childAccount]);
-    setUsers((prev) => [...prev, childUser]);
-
-    // Add child to all current family groups
-    if (groups.length > 0) {
-      setGroups((prev) =>
-        prev.map((g) => ({
-          ...g,
-          memberIds: Array.from(new Set([...g.memberIds, childId])),
-        }))
-      );
-    }
-
-    return { success: true, user: childUser };
+    return { success: false, error: res.error };
   };
 
   const logout = () => {
-    if (currentUser) {
-      // Mark as offline
-      setUsers((prev) =>
-        prev.map((u) => (u.id === currentUser.id ? { ...u, isOnline: false, lastSeen: 'Offline' } : u))
-      );
+    if (currentUserId) {
+      try {
+        const userRef = doc(db, 'users', currentUserId);
+        updateDoc(userRef, { isOnline: false, lastSeen: 'Inactive' }).catch(() => {});
+      } catch (e) {
+        console.warn('Logout status update notice:', e);
+      }
     }
     setCurrentUserId(null);
+    setIsGpsActive(false);
   };
 
   const pingMemberLocation = (userId: string) => {
-    setUsers((prev) =>
-      prev.map((u) => {
-        if (u.id === userId) {
-          return {
-            ...u,
-            isOnline: true,
-            lastSeen: 'Active now',
-            location: {
-              ...u.location,
-              updatedAt: 'Updated just now (GPS ping response)',
-            },
-          };
-        }
-        return u;
-      })
-    );
+    const target = getUserById(userId);
+    if (!target) return;
+    // Broadcast message or alert
+    if (currentUser) {
+      sendMessage({
+        text: `📍 Radar Location Ping requested for ${getDisplayName(userId)}`,
+        isImportant: true,
+      });
+    }
   };
 
   return (
@@ -822,6 +1210,10 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
         deleteTask,
         createGroup,
         addMemberBySearch,
+        startDirectChat,
+        updateProfileAvatar,
+        isGpsActive,
+        enableGpsRadar,
         callSession,
         startCall,
         endCall,
