@@ -1,0 +1,6 @@
+{
+  "name": "Family Chat",
+  "description": "Secure, private, responsive family web app featuring messaging, self-destructing media, live location radar, shared tasks, custom nicknames, and audio/video calling.",
+  "requestFramePermissions": ["camera", "microphone", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
